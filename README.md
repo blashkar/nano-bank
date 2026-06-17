@@ -133,7 +133,64 @@ under `/api/v1`:
 
 > Most handlers are placeholders today — the routing, middleware, config, and
 > database layers are wired up, but business logic for transactions, accounts,
-> etc. still needs implementing.
+> etc. still needs implementing. See [Implementation status](#implementation-status).
+
+## Implementation status
+
+### ✅ Implemented
+
+**Infrastructure & data layer**
+
+- Kind cluster config and PostgreSQL Kubernetes manifests (`k8s/`), with an init
+  Job that loads the DDL on first boot
+- `setup-k8s.sh` / `start-nano-bank.sh` / `stop-nano-bank.sh` lifecycle scripts
+- Full **double-entry PostgreSQL schema** (`src/core/tables/`, `00`–`06`):
+  enums, customers, accounts, transactions + entries, security/audit tables, and
+  trigger-based balance validation
+
+**API server scaffolding** (`api/`)
+
+- axum router with all `/api/v1` routes mounted
+- Middleware stack: CORS, gzip/brotli compression, 30s request timeout, 10 MB
+  body limit, structured tracing
+- Configuration loading (`config` + `default.toml` + env overrides, `RUN_MODE`)
+- Database connection pool with startup health check and a table-existence
+  migration check
+- Domain **models** as typed Rust structs: customer, account, transaction,
+  security
+- Centralized **error handling** module
+
+**Working endpoints**
+
+- `GET /health` — real database-backed health check
+- `GET /docs` — HTML API documentation
+
+### 🚧 Not yet implemented
+
+**Handler business logic** — routes exist but return `"... endpoint - TODO:
+implement"`:
+
+- **Auth** — `login`, `refresh`, `logout` (JWT issuance/validation, argon2
+  password verification, session handling)
+- **Customers** — create, get/update profile, KYC document upload
+- **Accounts** — list, create, get details, get balance
+- **Transactions** — transfer, deposit, withdrawal, history (wired to the
+  double-entry ledger)
+- **Security** — sessions, devices, device trust
+- The `repositories/`, `services/`, `middleware/`, and `utils/` modules are
+  empty placeholders awaiting these implementations
+
+**Planned subsystems** (not yet started):
+
+- **CRM** — customer relationship management: contact/interaction history,
+  support tickets/cases, segmentation, communications, and lifecycle tracking on
+  top of the existing customer records
+- **Fraud** — real-time fraud detection and prevention: transaction risk
+  scoring, rules engine, velocity/anomaly checks, alerts and case management,
+  building on the security/monitoring tables already in the schema
+- **Agentic Governance** — guardrails and oversight for AI/agent-driven actions:
+  policy enforcement, human-in-the-loop approvals, action audit trails, and
+  explainability for any automated decisioning in the bank
 
 ## Database
 
