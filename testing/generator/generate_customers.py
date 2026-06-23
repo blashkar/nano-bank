@@ -1,8 +1,9 @@
 """nano-bank mock customer generator.
 
 Continuously fabricates Canadian-flavoured customers with Faker and registers
-them against the live nano-bank API (`POST /api/v1/customers`). This is the
-*input* side of the test harness — run the Streamlit viewer to watch them land.
+them against the live nano-bank API (`POST /api/v1/customers`), then opens one
+or more accounts for each (`POST /api/v1/accounts`). This is the *input* side of
+the test harness — run the Streamlit viewer to watch them land.
 
 Config via env vars:
   API_BASE_URL     base URL of the API           (default http://localhost:8081)
@@ -10,6 +11,7 @@ Config via env vars:
   COUNT            how many to create, 0 = forever (default 0)
   FAKER_LOCALE     Faker locale                   (default en_CA)
   REQUEST_TIMEOUT  per-request timeout, seconds    (default 10)
+  SAVINGS_PROB     chance a customer also opens a savings account (default 0.6)
 """
 from __future__ import annotations
 
@@ -27,8 +29,10 @@ INTERVAL_SECONDS = float(os.getenv("INTERVAL_SECONDS", "3.0"))
 COUNT = int(os.getenv("COUNT", "0"))
 FAKER_LOCALE = os.getenv("FAKER_LOCALE", "en_CA")
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+SAVINGS_PROB = float(os.getenv("SAVINGS_PROB", "0.6"))
 
 CUSTOMERS_URL = f"{API_BASE_URL}/api/v1/customers"
+ACCOUNTS_URL = f"{API_BASE_URL}/api/v1/accounts"
 HEALTH_URL = f"{API_BASE_URL}/health"
 
 fake = Faker(FAKER_LOCALE)
@@ -82,41 +86,69 @@ def wait_for_api(retries: int = 30) -> None:
     log(f"⚠️  API never became healthy at {API_BASE_URL}; trying anyway")
 
 
-def register_one(session: requests.Session) -> bool:
-    """Create one customer; retry a few times on the rare duplicate (409)."""
+def register_one(session: requests.Session) -> dict | None:
+    """Create one customer; retry on the rare duplicate (409). Returns the
+    created customer record, or None on failure."""
     for _ in range(3):
         payload = make_customer()
         try:
             resp = session.post(CUSTOMERS_URL, json=payload, timeout=REQUEST_TIMEOUT)
         except requests.RequestException as e:
             log(f"✗ request failed: {e}")
-            return False
+            return None
 
         if resp.status_code == 201:
             data = resp.json()
             log(f"✓ created {data['first_name']} {data['last_name']} "
                 f"<{data['email']}>  id={data['customer_id'][:8]}  kyc={data['kyc_status']}")
-            return True
+            return data
         if resp.status_code == 409:
             log("· duplicate, regenerating …")
             continue
         log(f"✗ {resp.status_code}: {resp.text[:200]}")
-        return False
+        return None
     log("✗ gave up after repeated duplicates")
+    return None
+
+
+def open_account(session: requests.Session, customer_id: str, account_type: str) -> bool:
+    """Open one account of the given type ('checking'|'savings') for a customer."""
+    payload = {"customer_id": customer_id, "account_type": account_type}
+    try:
+        resp = session.post(ACCOUNTS_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as e:
+        log(f"  ✗ account request failed: {e}")
+        return False
+
+    if resp.status_code == 201:
+        a = resp.json()
+        rate = float(a.get("interest_rate", 0)) if "interest_rate" in a else None
+        rate_str = f"  rate={rate:.2%}" if rate is not None else ""
+        log(f"  ✓ opened {a['account_type']} #{a['account_number']} "
+            f"acct={a['account_id'][:8]}  status={a['status']}{rate_str}")
+        return True
+    log(f"  ✗ account {resp.status_code}: {resp.text[:200]}")
     return False
 
 
 def main() -> int:
     log(f"generator starting → {CUSTOMERS_URL}  "
-        f"interval={INTERVAL_SECONDS}s  count={'∞' if COUNT == 0 else COUNT}  locale={FAKER_LOCALE}")
+        f"interval={INTERVAL_SECONDS}s  count={'∞' if COUNT == 0 else COUNT}  "
+        f"locale={FAKER_LOCALE}  savings_prob={SAVINGS_PROB}")
     wait_for_api()
 
     session = requests.Session()
     made = 0
     try:
         while COUNT == 0 or made < COUNT:
-            if register_one(session):
+            customer = register_one(session)
+            if customer:
                 made += 1
+                cid = customer["customer_id"]
+                # Everyone gets a chequing account; some also open savings.
+                open_account(session, cid, "checking")
+                if random.random() < SAVINGS_PROB:
+                    open_account(session, cid, "savings")
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")

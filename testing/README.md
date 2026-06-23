@@ -3,11 +3,16 @@
 Two small containers for exercising the bank and watching it work:
 
 - **`generator/`** — *input.* Fabricates Canadian-flavoured customers with
-  [Faker] and registers them against the live API (`POST /api/v1/customers`).
+  [Faker] and registers them against the live API (`POST /api/v1/customers`),
+  then opens accounts for each (`POST /api/v1/accounts`): always a chequing
+  account, plus a savings account ~60 % of the time. Chequing accounts carry a
+  3 % interest ("return") rate; savings 0 % for now.
 - **`viewer/`** — *output.* A Streamlit dashboard (port **8504**) that taps
-  Postgres directly and shows customer activity live — counts, a per-minute
-  creation-rate chart, and a newest-first registration feed. Accounts and
-  transactions get their own tabs as those handlers land.
+  Postgres directly and shows activity live. The **Customers** tab has counts, a
+  per-minute creation-rate chart, and a registration feed; the **Accounts** tab
+  shows totals, a by-type breakdown, the chequing rate, an opening-rate chart,
+  and a recent-accounts feed. Transactions get their own tab as that handler
+  lands.
 
 ```
  generator ──HTTP POST──▶  nano-bank API (:8081) ──▶  Postgres
@@ -63,6 +68,7 @@ podman logs -f nano-bank-viewer       # streamlit logs
 |-----|---------|---------|
 | `INTERVAL_SECONDS` | `3` | delay between customer registrations |
 | `COUNT` | `0` | how many to create (`0` = forever) |
+| `SAVINGS_PROB` | `0.6` | chance a customer also opens a savings account |
 | `API_BASE_URL` | `http://localhost:8081` | API the generator targets |
 | `DB_HOST` / `DB_PORT` | `::1` / `5432` | Postgres the viewer reads (IPv6 — see note above) |
 | `VIEWER_PORT` | `8504` | Streamlit port |

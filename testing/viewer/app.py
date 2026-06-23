@@ -74,6 +74,52 @@ def render_customers() -> None:
                      "created", format="HH:mm:ss")})
 
 
+def render_accounts() -> None:
+    total = int(query("SELECT count(*) AS n FROM accounts")["n"][0])
+    last_hour = int(query(
+        "SELECT count(*) AS n FROM accounts "
+        "WHERE created_at >= now() - interval '1 hour'")["n"][0])
+    by_type = query(
+        "SELECT account_type::text AS account_type, count(*) AS n, "
+        "       avg(interest_rate) AS avg_rate "
+        "FROM accounts GROUP BY account_type ORDER BY n DESC")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total accounts", f"{total:,}")
+    c2.metric("Opened (last hour)", f"{last_hour:,}")
+    chequing_rate = next(
+        (float(r.avg_rate) for r in by_type.itertuples() if r.account_type == "checking"),
+        None)
+    c3.metric("Chequing rate", f"{chequing_rate:.2%}" if chequing_rate is not None else "—")
+
+    if not by_type.empty:
+        st.caption("Accounts by type")
+        st.bar_chart(by_type.set_index("account_type")["n"], height=180)
+
+    # Opening rate over the last hour, per minute.
+    rate = query(
+        "SELECT date_trunc('minute', created_at) AS minute, count(*) AS accounts "
+        "FROM accounts WHERE created_at >= now() - interval '1 hour' "
+        "GROUP BY 1 ORDER BY 1")
+    if not rate.empty:
+        st.caption("Accounts opened per minute (last hour)")
+        st.bar_chart(rate.set_index("minute")["accounts"], height=180)
+
+    st.subheader("🧾 Recent accounts")
+    feed = query(
+        "SELECT a.created_at, a.account_number, a.account_type::text AS account_type, "
+        "       a.status::text AS status, (a.interest_rate * 100) AS rate_pct, "
+        "       a.balance, a.currency, "
+        "       c.first_name || ' ' || c.last_name AS customer "
+        "FROM accounts a JOIN customers c USING (customer_id) "
+        "ORDER BY a.created_at DESC LIMIT 200")
+    st.dataframe(feed, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("opened", format="HH:mm:ss"),
+                     "rate_pct": st.column_config.NumberColumn("rate", format="%.2f%%"),
+                 })
+
+
 def main() -> None:
     st.set_page_config(page_title="nano-bank viewer", page_icon="🏦", layout="wide")
     st.title("🏦 nano-bank · live activity")
@@ -82,7 +128,7 @@ def main() -> None:
     st_autorefresh(interval=REFRESH_SECONDS * 1000, key="refresh")
 
     tab_customers, tab_accounts, tab_tx = st.tabs(
-        ["👤 Customers", "💳 Accounts (soon)", "💸 Transactions (soon)"])
+        ["👤 Customers", "💳 Accounts", "💸 Transactions (soon)"])
     with tab_customers:
         try:
             render_customers()
@@ -94,7 +140,10 @@ def main() -> None:
                     "`0.0.0.0:5432` is a dead kind/docker-proxy mapping), so DB_HOST "
                     "defaults to `::1`.")
     with tab_accounts:
-        st.info("Account creation will appear here once the accounts handler is implemented.")
+        try:
+            render_accounts()
+        except Exception as e:
+            st.error(f"Database error: {e}")
     with tab_tx:
         st.info("Deposits / withdrawals / transfers will appear here once the "
                 "transaction handlers are implemented.")

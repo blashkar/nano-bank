@@ -7,6 +7,7 @@ use validator::Validate;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "account_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum AccountType {
     Checking,
     Savings,
@@ -14,6 +15,7 @@ pub enum AccountType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "account_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum AccountStatus {
     Active,
     Frozen,
@@ -42,8 +44,13 @@ pub struct Account {
 }
 
 // Account creation request
+//
+// `customer_id` is carried in the body because there is no auth layer yet to
+// derive the caller's identity from a session/JWT. Once `/auth` lands this
+// should come from the authenticated principal instead.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateAccountRequest {
+    pub customer_id: Uuid,
     pub account_type: AccountType,
     pub initial_deposit: Option<Decimal>,
 }
@@ -132,6 +139,7 @@ pub struct AccountResponse {
     pub balance: Decimal,
     pub available_balance: Decimal,
     pub status: AccountStatus,
+    pub interest_rate: Decimal,
     pub created_at: DateTime<Utc>,
     pub activated_at: Option<DateTime<Utc>>,
 }
@@ -146,6 +154,7 @@ impl From<Account> for AccountResponse {
             balance: account.balance,
             available_balance: account.available_balance,
             status: account.status,
+            interest_rate: account.interest_rate,
             created_at: account.created_at,
             activated_at: account.activated_at,
         }
