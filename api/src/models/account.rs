@@ -9,8 +9,9 @@ use validator::Validate;
 #[sqlx(type_name = "account_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {
-    Checking,
+    Chequing,
     Savings,
+    CreditCard,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
@@ -140,6 +141,9 @@ pub struct AccountResponse {
     pub available_balance: Decimal,
     pub status: AccountStatus,
     pub interest_rate: Decimal,
+    /// For credit cards this is the credit limit (the balance may run up to it);
+    /// for deposit accounts it's the overdraft allowance (0 today).
+    pub overdraft_limit: Decimal,
     pub created_at: DateTime<Utc>,
     pub activated_at: Option<DateTime<Utc>>,
 }
@@ -155,6 +159,7 @@ impl From<Account> for AccountResponse {
             available_balance: account.available_balance,
             status: account.status,
             interest_rate: account.interest_rate,
+            overdraft_limit: account.overdraft_limit,
             created_at: account.created_at,
             activated_at: account.activated_at,
         }

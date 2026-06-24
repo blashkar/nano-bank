@@ -1,14 +1,16 @@
 """nano-bank activity viewer.
 
 The *output* side of the test harness: a live dashboard that taps the Postgres
-database directly and shows what the bank is doing. Today that's customer
-creation; accounts and transactions get their own tabs as those handlers land.
+database directly and shows what the bank is doing — customer registrations,
+account openings, and credit-card payment activity (authorizations, captures,
+and settlement batches over the mock Visa rails).
 
 Reads from Postgres (not the API) on purpose — it's an observability tool that
-watches the source of truth, independent of which API endpoints exist yet.
+watches the source of truth, independent of which API endpoints exist yet. The
+synthetic "system" customer and its internal GL accounts are filtered out.
 
 Config via env vars (defaults match nano-bank's local dev port-forward):
-  DB_HOST  (default 127.0.0.1)   DB_PORT (default 5432)
+  DB_HOST  (default ::1)         DB_PORT (default 5432)
   DB_NAME  (default nano_bank_db) DB_USER (default nanobank_user)
   DB_PASSWORD (default secure_nano_password_2024!)
   REFRESH_SECONDS (default 3)
@@ -31,6 +33,14 @@ DB = dict(
 )
 REFRESH_SECONDS = int(os.getenv("REFRESH_SECONDS", "3"))
 
+# The card rails use a synthetic system customer + internal GL accounts; hide
+# them so the dashboard only shows real, customer-facing activity.
+SYSTEM_EMAIL = "system@nano.bank"
+NOT_SYSTEM_CUSTOMER = f"email <> '{SYSTEM_EMAIL}'"
+NOT_SYSTEM_ACCOUNT = (
+    f"customer_id NOT IN (SELECT customer_id FROM customers WHERE email = '{SYSTEM_EMAIL}')"
+)
+
 
 def query(sql: str) -> pd.DataFrame:
     """Run one query on a fresh short-lived connection (dashboard is low-traffic)."""
@@ -42,13 +52,13 @@ def query(sql: str) -> pd.DataFrame:
 
 
 def render_customers() -> None:
-    total = int(query("SELECT count(*) AS n FROM customers")["n"][0])
+    total = int(query(f"SELECT count(*) AS n FROM customers WHERE {NOT_SYSTEM_CUSTOMER}")["n"][0])
     last_hour = int(query(
-        "SELECT count(*) AS n FROM customers "
-        "WHERE created_at >= now() - interval '1 hour'")["n"][0])
+        f"SELECT count(*) AS n FROM customers "
+        f"WHERE {NOT_SYSTEM_CUSTOMER} AND created_at >= now() - interval '1 hour'")["n"][0])
     by_kyc = query(
-        "SELECT kyc_status::text AS kyc_status, count(*) AS n "
-        "FROM customers GROUP BY kyc_status ORDER BY n DESC")
+        f"SELECT kyc_status::text AS kyc_status, count(*) AS n "
+        f"FROM customers WHERE {NOT_SYSTEM_CUSTOMER} GROUP BY kyc_status ORDER BY n DESC")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total customers", f"{total:,}")
@@ -57,38 +67,38 @@ def render_customers() -> None:
 
     # Creation rate over the last hour, per minute.
     rate = query(
-        "SELECT date_trunc('minute', created_at) AS minute, count(*) AS customers "
-        "FROM customers WHERE created_at >= now() - interval '1 hour' "
-        "GROUP BY 1 ORDER BY 1")
+        f"SELECT date_trunc('minute', created_at) AS minute, count(*) AS customers "
+        f"FROM customers WHERE {NOT_SYSTEM_CUSTOMER} AND created_at >= now() - interval '1 hour' "
+        f"GROUP BY 1 ORDER BY 1")
     if not rate.empty:
         st.caption("Customers created per minute (last hour)")
         st.bar_chart(rate.set_index("minute")["customers"], height=180)
 
     st.subheader("🧾 Recent customer registrations")
     feed = query(
-        "SELECT created_at, first_name, last_name, email, phone_number, "
-        "kyc_status::text AS kyc_status, customer_id "
-        "FROM customers ORDER BY created_at DESC LIMIT 200")
+        f"SELECT created_at, first_name, last_name, email, phone_number, "
+        f"kyc_status::text AS kyc_status, customer_id "
+        f"FROM customers WHERE {NOT_SYSTEM_CUSTOMER} ORDER BY created_at DESC LIMIT 200")
     st.dataframe(feed, use_container_width=True, hide_index=True,
                  column_config={"created_at": st.column_config.DatetimeColumn(
                      "created", format="HH:mm:ss")})
 
 
 def render_accounts() -> None:
-    total = int(query("SELECT count(*) AS n FROM accounts")["n"][0])
+    total = int(query(f"SELECT count(*) AS n FROM accounts WHERE {NOT_SYSTEM_ACCOUNT}")["n"][0])
     last_hour = int(query(
-        "SELECT count(*) AS n FROM accounts "
-        "WHERE created_at >= now() - interval '1 hour'")["n"][0])
+        f"SELECT count(*) AS n FROM accounts "
+        f"WHERE {NOT_SYSTEM_ACCOUNT} AND created_at >= now() - interval '1 hour'")["n"][0])
     by_type = query(
-        "SELECT account_type::text AS account_type, count(*) AS n, "
-        "       avg(interest_rate) AS avg_rate "
-        "FROM accounts GROUP BY account_type ORDER BY n DESC")
+        f"SELECT account_type::text AS account_type, count(*) AS n, "
+        f"       avg(interest_rate) AS avg_rate "
+        f"FROM accounts WHERE {NOT_SYSTEM_ACCOUNT} GROUP BY account_type ORDER BY n DESC")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total accounts", f"{total:,}")
     c2.metric("Opened (last hour)", f"{last_hour:,}")
     chequing_rate = next(
-        (float(r.avg_rate) for r in by_type.itertuples() if r.account_type == "checking"),
+        (float(r.avg_rate) for r in by_type.itertuples() if r.account_type == "chequing"),
         None)
     c3.metric("Chequing rate", f"{chequing_rate:.2%}" if chequing_rate is not None else "—")
 
@@ -98,25 +108,79 @@ def render_accounts() -> None:
 
     # Opening rate over the last hour, per minute.
     rate = query(
-        "SELECT date_trunc('minute', created_at) AS minute, count(*) AS accounts "
-        "FROM accounts WHERE created_at >= now() - interval '1 hour' "
-        "GROUP BY 1 ORDER BY 1")
+        f"SELECT date_trunc('minute', created_at) AS minute, count(*) AS accounts "
+        f"FROM accounts WHERE {NOT_SYSTEM_ACCOUNT} AND created_at >= now() - interval '1 hour' "
+        f"GROUP BY 1 ORDER BY 1")
     if not rate.empty:
         st.caption("Accounts opened per minute (last hour)")
         st.bar_chart(rate.set_index("minute")["accounts"], height=180)
 
     st.subheader("🧾 Recent accounts")
+    # overdraft_limit doubles as the credit limit for credit-card accounts.
     feed = query(
         "SELECT a.created_at, a.account_number, a.account_type::text AS account_type, "
         "       a.status::text AS status, (a.interest_rate * 100) AS rate_pct, "
-        "       a.balance, a.currency, "
+        "       a.balance, "
+        "       CASE WHEN a.account_type = 'credit_card' THEN a.overdraft_limit END AS credit_limit, "
+        "       a.currency, "
         "       c.first_name || ' ' || c.last_name AS customer "
         "FROM accounts a JOIN customers c USING (customer_id) "
+        f"WHERE c.{NOT_SYSTEM_CUSTOMER} "
         "ORDER BY a.created_at DESC LIMIT 200")
     st.dataframe(feed, use_container_width=True, hide_index=True,
                  column_config={
                      "created_at": st.column_config.DatetimeColumn("opened", format="HH:mm:ss"),
                      "rate_pct": st.column_config.NumberColumn("rate", format="%.2f%%"),
+                     "credit_limit": st.column_config.NumberColumn("credit limit", format="$%.0f"),
+                 })
+
+
+def render_transactions() -> None:
+    """Credit-card payment rails: authorizations (open holds), captured
+    purchases, and settlement batches."""
+    purchases = int(query(
+        "SELECT count(*) AS n FROM transactions WHERE transaction_type = 'card_purchase'")["n"][0])
+    vol_hour = float(query(
+        "SELECT COALESCE(sum(amount), 0) AS v FROM transactions "
+        "WHERE transaction_type = 'card_purchase' AND created_at >= now() - interval '1 hour'")["v"][0])
+    unsettled = float(query(
+        "SELECT COALESCE(sum(amount), 0) AS v FROM transactions "
+        "WHERE transaction_type = 'card_purchase' "
+        "AND (metadata->>'settled') IS DISTINCT FROM 'true'")["v"][0])
+    open_auths = int(query(
+        "SELECT count(*) AS n FROM account_holds WHERE released_at IS NULL "
+        "AND reason LIKE 'visa_auth:%'")["n"][0])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Captured purchases", f"{purchases:,}")
+    c2.metric("Volume (last hour)", f"${vol_hour:,.2f}")
+    c3.metric("Unsettled", f"${unsettled:,.2f}")
+    c4.metric("Open authorizations", f"{open_auths:,}")
+
+    # Purchase volume per minute over the last hour.
+    rate = query(
+        "SELECT date_trunc('minute', created_at) AS minute, sum(amount) AS volume "
+        "FROM transactions WHERE transaction_type = 'card_purchase' "
+        "AND created_at >= now() - interval '1 hour' GROUP BY 1 ORDER BY 1")
+    if not rate.empty:
+        st.caption("Card purchase volume per minute (last hour)")
+        st.bar_chart(rate.set_index("minute")["volume"], height=180)
+
+    st.subheader("🧾 Recent card activity")
+    feed = query(
+        "SELECT t.created_at, t.transaction_type::text AS type, t.amount, "
+        "       t.metadata->>'merchant' AS merchant, "
+        "       (t.metadata->>'settled') = 'true' AS settled, "
+        "       t.reference_number, "
+        "       c.first_name || ' ' || c.last_name AS cardholder "
+        "FROM transactions t LEFT JOIN customers c ON c.customer_id = t.initiated_by "
+        "WHERE t.transaction_type IN ('card_purchase', 'card_settlement') "
+        "ORDER BY t.created_at DESC LIMIT 200")
+    st.dataframe(feed, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount": st.column_config.NumberColumn("amount", format="$%.2f"),
+                     "settled": st.column_config.CheckboxColumn("settled"),
                  })
 
 
@@ -128,7 +192,7 @@ def main() -> None:
     st_autorefresh(interval=REFRESH_SECONDS * 1000, key="refresh")
 
     tab_customers, tab_accounts, tab_tx = st.tabs(
-        ["👤 Customers", "💳 Accounts", "💸 Transactions (soon)"])
+        ["👤 Customers", "💳 Accounts", "💸 Card transactions"])
     with tab_customers:
         try:
             render_customers()
@@ -145,8 +209,10 @@ def main() -> None:
         except Exception as e:
             st.error(f"Database error: {e}")
     with tab_tx:
-        st.info("Deposits / withdrawals / transfers will appear here once the "
-                "transaction handlers are implemented.")
+        try:
+            render_transactions()
+        except Exception as e:
+            st.error(f"Database error: {e}")
 
 
 if __name__ == "__main__":

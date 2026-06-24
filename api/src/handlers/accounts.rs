@@ -6,12 +6,33 @@ use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::models::account::{Account, AccountResponse, AccountType, CreateAccountRequest};
 
-/// Interest ("return") rate applied to each account type, as a fraction (3% = 0.03).
-/// Chequing earns 3%; savings has no rate set yet.
-fn interest_rate_for(account_type: &AccountType) -> Decimal {
+/// Opening terms for a new account, by type.
+///
+/// `interest_rate` is a fraction (3% = 0.03). For deposit accounts it's the
+/// return paid to the customer; for a credit card it's the APR charged on the
+/// balance. `credit_limit` reuses the `overdraft_limit` column — how far the
+/// balance may run (0 for deposit accounts; the card's limit for a credit card).
+struct OpeningTerms {
+    interest_rate: Decimal,
+    credit_limit: Decimal,
+}
+
+fn opening_terms(account_type: &AccountType) -> OpeningTerms {
     match account_type {
-        AccountType::Checking => Decimal::new(300, 4), // 0.0300 = 3%
-        AccountType::Savings => Decimal::ZERO,
+        // Chequing earns 3%; savings has no rate set yet.
+        AccountType::Chequing => OpeningTerms {
+            interest_rate: Decimal::new(300, 4), // 0.0300 = 3%
+            credit_limit: Decimal::ZERO,
+        },
+        AccountType::Savings => OpeningTerms {
+            interest_rate: Decimal::ZERO,
+            credit_limit: Decimal::ZERO,
+        },
+        // Standard Canadian card terms: 19.99% APR, $5,000 limit.
+        AccountType::CreditCard => OpeningTerms {
+            interest_rate: Decimal::new(1999, 4), // 0.1999 = 19.99% APR
+            credit_limit: Decimal::new(5000, 0),  // $5,000.00
+        },
     }
 }
 
@@ -44,7 +65,7 @@ async fn create_account(
     State(state): State<AppState>,
     Json(payload): Json<CreateAccountRequest>,
 ) -> Result<(StatusCode, Json<AccountResponse>), AppError> {
-    let interest_rate = interest_rate_for(&payload.account_type);
+    let terms = opening_terms(&payload.account_type);
 
     // Retry a few times in the (vanishingly rare) event of an account-number clash.
     let mut last_err = None;
@@ -54,8 +75,8 @@ async fn create_account(
             r#"
             INSERT INTO accounts
                 (customer_id, account_number, account_type, interest_rate,
-                 status, activated_at)
-            VALUES ($1, $2, $3, $4, 'active', CURRENT_TIMESTAMP)
+                 overdraft_limit, available_balance, status, activated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, 'active', CURRENT_TIMESTAMP)
             RETURNING
                 account_id, customer_id, account_number, account_type, currency,
                 balance, available_balance, status, interest_rate, overdraft_limit,
@@ -65,7 +86,11 @@ async fn create_account(
         .bind(payload.customer_id)
         .bind(&account_number)
         .bind(&payload.account_type)
-        .bind(interest_rate)
+        .bind(terms.interest_rate)
+        // overdraft_limit doubles as the credit limit; a credit card's available
+        // balance starts at its full limit, deposit accounts start at 0.
+        .bind(terms.credit_limit)
+        .bind(terms.credit_limit)
         .fetch_one(&state.pool)
         .await;
 

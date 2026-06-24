@@ -60,7 +60,7 @@ psql -U postgres -d nano_bank
 - **Configurable monitoring rules** with risk scoring
 
 ### Account Management
-- **Flexible account types** (checking, savings)
+- **Flexible account types** (chequing, savings, credit_card)
 - **Daily/monthly/annual limits** with automatic tracking
 - **Account holds** for pending transactions
 - **Interest rate support**

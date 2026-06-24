@@ -18,8 +18,9 @@ CREATE TYPE address_type AS ENUM (
 
 -- Account Types
 CREATE TYPE account_type AS ENUM (
-    'checking',
-    'savings'
+    'chequing',
+    'savings',
+    'credit_card'
 );
 
 -- Account Status

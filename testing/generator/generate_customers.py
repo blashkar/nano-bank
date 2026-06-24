@@ -30,6 +30,7 @@ COUNT = int(os.getenv("COUNT", "0"))
 FAKER_LOCALE = os.getenv("FAKER_LOCALE", "en_CA")
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 SAVINGS_PROB = float(os.getenv("SAVINGS_PROB", "0.6"))
+CREDIT_CARD_PROB = float(os.getenv("CREDIT_CARD_PROB", "0.4"))
 
 CUSTOMERS_URL = f"{API_BASE_URL}/api/v1/customers"
 ACCOUNTS_URL = f"{API_BASE_URL}/api/v1/accounts"
@@ -112,7 +113,7 @@ def register_one(session: requests.Session) -> dict | None:
 
 
 def open_account(session: requests.Session, customer_id: str, account_type: str) -> bool:
-    """Open one account of the given type ('checking'|'savings') for a customer."""
+    """Open one account of the given type ('chequing'|'savings'|'credit_card')."""
     payload = {"customer_id": customer_id, "account_type": account_type}
     try:
         resp = session.post(ACCOUNTS_URL, json=payload, timeout=REQUEST_TIMEOUT)
@@ -124,8 +125,12 @@ def open_account(session: requests.Session, customer_id: str, account_type: str)
         a = resp.json()
         rate = float(a.get("interest_rate", 0)) if "interest_rate" in a else None
         rate_str = f"  rate={rate:.2%}" if rate is not None else ""
+        # For credit cards, the overdraft_limit column carries the credit limit.
+        limit_str = ""
+        if account_type == "credit_card" and a.get("overdraft_limit") is not None:
+            limit_str = f"  limit=${float(a['overdraft_limit']):,.0f}"
         log(f"  ✓ opened {a['account_type']} #{a['account_number']} "
-            f"acct={a['account_id'][:8]}  status={a['status']}{rate_str}")
+            f"acct={a['account_id'][:8]}  status={a['status']}{rate_str}{limit_str}")
         return True
     log(f"  ✗ account {resp.status_code}: {resp.text[:200]}")
     return False
@@ -145,10 +150,13 @@ def main() -> int:
             if customer:
                 made += 1
                 cid = customer["customer_id"]
-                # Everyone gets a chequing account; some also open savings.
-                open_account(session, cid, "checking")
+                # Everyone gets a chequing account; some also open savings
+                # and/or a credit card.
+                open_account(session, cid, "chequing")
                 if random.random() < SAVINGS_PROB:
                     open_account(session, cid, "savings")
+                if random.random() < CREDIT_CARD_PROB:
+                    open_account(session, cid, "credit_card")
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")

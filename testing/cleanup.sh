@@ -7,9 +7,9 @@
 # sessions, devices, …), giving a clean slate for the next test run.
 #
 # Usage:
-#   ./cleanup.sh              # stop generator, show counts, TRUNCATE, show counts
+#   ./cleanup.sh              # stop input containers, show counts, TRUNCATE, show counts
 #   ./cleanup.sh --dry-run    # only show row counts, change nothing
-#   ./cleanup.sh --keep-generator   # don't stop the generator container first
+#   ./cleanup.sh --keep-generator   # don't stop the input containers first
 #
 # Env overrides: NS, DB_NAME, DB_USER, DB_PASSWORD, ROOT_TABLE (default customers).
 set -euo pipefail
@@ -52,13 +52,17 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "🔎 --dry-run: nothing changed."; exit 0
 fi
 
-# Stop the generator first so the wipe actually sticks (best-effort; needs podman).
+# Stop the input containers (generator + Visa rails) first so the wipe actually
+# sticks — otherwise they keep inserting rows (and the Visa sim would FK-fail on
+# the just-wiped system customer until it self-heals). Best-effort; needs podman.
 if [ "$STOP_GENERATOR" = "1" ] && command -v podman >/dev/null 2>&1; then
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx nano-bank-generator; then
-    echo "⏸  stopping nano-bank-generator …"
-    podman stop nano-bank-generator >/dev/null 2>&1 || true
-    STOPPED=1
-  fi
+  for c in nano-bank-generator nano-bank-visa; do
+    if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+      echo "⏸  stopping ${c} …"
+      podman stop "$c" >/dev/null 2>&1 || true
+      STOPPED_CONTAINERS="${STOPPED_CONTAINERS:+$STOPPED_CONTAINERS }$c"
+    fi
+  done
 fi
 
 echo "🧹 TRUNCATE ${ROOT_TABLE} RESTART IDENTITY CASCADE …"
@@ -66,5 +70,7 @@ psql_exec "TRUNCATE TABLE ${ROOT_TABLE} RESTART IDENTITY CASCADE" >/dev/null
 
 echo "📊 After:"; show_counts
 echo "✅ Done."
-[ "${STOPPED:-0}" = "1" ] && echo "ℹ  generator was stopped — restart with: podman start nano-bank-generator"
+if [ -n "${STOPPED_CONTAINERS:-}" ]; then
+  echo "ℹ  stopped: ${STOPPED_CONTAINERS} — restart with: podman start ${STOPPED_CONTAINERS}"
+fi
 exit 0

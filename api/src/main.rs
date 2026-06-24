@@ -70,6 +70,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Ensure the internal GL accounts the card rails post against exist. They
+    // are also resolved per-request (idempotent), so this is just early
+    // validation — a mid-run data wipe self-heals on the next card operation.
+    if let Err(e) = handlers::cards::ensure_system_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap system GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
     // Create application router
     let app = create_router(pool, &settings).await;
 
@@ -119,6 +127,9 @@ async fn create_router(
 
         // Account routes
         .nest("/api/v1/accounts", handlers::accounts::account_routes())
+
+        // Credit-card payment rails (issuer endpoints)
+        .nest("/api/v1/cards", handlers::cards::card_routes())
 
         // Transaction routes
         .nest("/api/v1/transactions", handlers::transactions::transaction_routes())
