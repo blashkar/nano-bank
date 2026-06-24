@@ -19,3 +19,6 @@ Thumbs.db
 # Environment / secrets (if added later)
 .env
 .env.*
+
+# Cache
+__pycache__/
