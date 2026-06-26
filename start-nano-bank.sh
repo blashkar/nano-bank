@@ -6,7 +6,8 @@ echo ""
 
 # Step 1: Create Kubernetes cluster and deploy PostgreSQL
 echo "📦 Step 1/3: Creating Kubernetes cluster and deploying PostgreSQL..."
-cd ~/dev/nano-bank
+project_path=$(dirname "$0")
+cd $project_path
 
 # Check if cluster already exists
 if kind get clusters 2>/dev/null | grep -q "^nano-bank$"; then
@@ -41,7 +42,7 @@ done
 
 echo ""
 echo "🚀 Step 3/3: Starting API server..."
-cd ~/dev/nano-bank/api
+cd $project_path/api
 
 # Start the API in background
 cargo run > /tmp/nano-bank-api.log 2>&1 &
