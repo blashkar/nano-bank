@@ -199,6 +199,41 @@ Each request has a `docs` tab inside Bruno explaining what it does and what to e
 
 ---
 
+## Part 4b — VS Code REST Client (alternative to Bruno)
+
+A ready-made `nano-bank.http` file lives at the repo root. It runs all six requests in sequence and automatically chains IDs between them — no manual copying needed.
+
+### Install the extension (one time)
+
+```bash
+code --install-extension humao.rest-client
+```
+
+Or search for **REST Client** by Huachao Mao in the VS Code Extensions panel.
+
+### Open and run
+
+```bash
+code ~/SIG/nano-bank/nano-bank.http
+```
+
+Each request has a **Send Request** link that appears above it when you hover. Click it and the response opens in a split pane on the right.
+
+Run them top to bottom in order:
+
+| Step | Request | Chains into next via |
+|------|---------|----------------------|
+| 1 | Health Check | — |
+| 2 | Create Customer | `createCustomer.response.body.customer_id` |
+| 3 | Open Account | `openAccount.response.body.account_id` |
+| 4 | Authorize Purchase | `authorize.response.body.auth_id` |
+| 5 | Capture Authorization | — |
+| 6 | Settle | — |
+
+> Each request is named with `# @name` — the next request references the previous response directly using `{{requestName.response.body.field}}`, so as long as you run them in order within the same VS Code session, no manual ID copying is needed.
+
+---
+
 ### Manual curl alternative (if you prefer the terminal)
 
 The examples below chain together: create a customer → open an account → run a card transaction. Copy the IDs from each response into the next command.
@@ -393,14 +428,51 @@ The following routes are wired up but not yet implemented — they return a plai
 
 ## Part 5 — Direct Database Access
 
-With the port-forward running (Terminal 1):
+### Option A — via kubectl (no local psql needed, always works)
+
+```bash
+kubectl exec -it -n nano-bank deployment/postgres -- \
+  psql -U nanobank_user -d nano_bank_db
+```
+
+### Option B — via local psql (requires port-forward running in Terminal 1)
+
+If `psql` is not installed: `brew install libpq && brew link --force libpq`
 
 ```bash
 psql -h localhost -p 5432 -U nanobank_user -d nano_bank_db
 # password: secure_nano_password_2024!
 ```
 
-Useful queries:
+---
+
+### Inspect tables and columns
+
+```sql
+-- List all tables
+\dt
+
+-- Show all columns, types and constraints for a table
+\d customers
+\d accounts
+\d transactions
+\d transaction_entries
+\d account_holds
+\d account_limits
+
+-- Full column listing across every table
+SELECT table_name, column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public'
+ORDER BY table_name, ordinal_position;
+
+-- Row counts across all tables
+SELECT relname AS table, n_live_tup AS rows
+FROM pg_stat_user_tables
+ORDER BY n_live_tup DESC;
+```
+
+### Query live data
 
 ```sql
 -- See all customers
@@ -430,21 +502,38 @@ WHERE released_at IS NULL;
 SELECT entity_type, action, changed_at FROM audit_logs ORDER BY changed_at DESC LIMIT 20;
 ```
 
+```sql
+-- Exit psql
+\q
+```
+
 ---
 
 ## Part 6 — Reset Data (without destroying the cluster)
+
+Use this when you hit a `409 Conflict` error (duplicate email or phone) and want a clean slate, or any time you want to start fresh without rebuilding the entire cluster.
 
 Wipes all customers, accounts, and transactions via `TRUNCATE ... CASCADE`. The system GL accounts self-heal on the next card operation.
 
 ```bash
 cd ~/SIG/nano-bank
 
-# Preview what will be deleted (no changes made)
+# Preview what will be deleted — shows row counts, makes no changes
 testing/cleanup.sh --dry-run
 
-# Actually wipe all data
+# Wipe all data
 testing/cleanup.sh
 ```
+
+To delete a single customer instead of wiping everything, connect to the DB and run:
+
+```bash
+kubectl exec -it -n nano-bank deployment/postgres -- \
+  psql -U nanobank_user -d nano_bank_db \
+  -c "DELETE FROM customers WHERE email = 'jane.doe@example.com';"
+```
+
+The `DELETE` cascades automatically to that customer's accounts, transactions, holds, and audit logs via the foreign key constraints.
 
 ---
 
