@@ -1,0 +1,19 @@
+meta {
+  name: Get Accounts
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/accounts?customer_id={{customerId}}
+  auth: inherit
+}
+
+params:query {
+  customer_id: {{customerId}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

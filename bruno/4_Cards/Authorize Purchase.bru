@@ -20,7 +20,7 @@ body:json {
 
 script:post-response {
   if (res.body.status === "approved") {
-    bru.setVar("authId", res.body.auth_id);
+    bru.setEnvVar("authId", res.body.auth_id);
   }
 }
 

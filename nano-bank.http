@@ -95,3 +95,44 @@ Content-Type: application/json
 {}
 
 ###
+
+# ─────────────────────────────────────────────────────────────
+# 7. List accounts for customer
+#    Uses customer_id from step 2. Returns Vec<AccountSummary>.
+# ─────────────────────────────────────────────────────────────
+
+GET {{baseUrl}}/api/v1/accounts?customer_id={{createCustomer.response.body.customer_id}}
+Accept: application/json
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 8. Get single account (full details)
+#    Uses account_id from step 3. Returns AccountResponse.
+# ─────────────────────────────────────────────────────────────
+
+GET {{baseUrl}}/api/v1/accounts/{{openAccount.response.body.account_id}}
+Accept: application/json
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 9. Get balance with active holds
+#    Uses account_id from step 3. Returns balance + holds[].
+#    Run after step 4 (authorize) to see an open hold in holds[].
+# ─────────────────────────────────────────────────────────────
+
+GET {{baseUrl}}/api/v1/accounts/{{openAccount.response.body.account_id}}/balance
+Accept: application/json
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 10. Get customer profile
+#     Uses customer_id from step 2. Returns CustomerResponse.
+# ─────────────────────────────────────────────────────────────
+
+GET {{baseUrl}}/api/v1/customers/profile?customer_id={{createCustomer.response.body.customer_id}}
+Accept: application/json
+
+###

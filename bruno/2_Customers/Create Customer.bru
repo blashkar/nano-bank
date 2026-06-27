@@ -23,7 +23,7 @@ body:json {
 }
 
 script:post-response {
-  bru.setVar("customerId", res.body.customer_id);
+  bru.setEnvVar("customerId", res.body.customer_id);
 }
 
 settings {

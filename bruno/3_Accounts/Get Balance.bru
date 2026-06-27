@@ -1,0 +1,15 @@
+meta {
+  name: Get Balance
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/v1/accounts/{{accountId}}/balance
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
