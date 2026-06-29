@@ -25,6 +25,8 @@ max_login_attempts = 5
 lockout_duration = 900
 session_timeout = 86400
 require_mfa = false
+# Secret the mock Visa network presents to mint a service token (client-credentials).
+service_client_secret = "nano-bank-visa-network-secret-change-me"
 
 [logging]
 level = "info"
