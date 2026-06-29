@@ -1,6 +1,7 @@
 mod config;
 mod errors;
 mod handlers;
+mod ledger;
 mod middleware;
 mod models;
 mod repositories;
@@ -105,10 +106,15 @@ async fn create_router(
         .allow_credentials(true)
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
+    // Select the accounting core behind the swappable Ledger port.
+    let ledger = build_ledger();
+    info!("🔌 Ledger backend: {}", ledger.backend());
+
     // Create application state
     let app_state = handlers::AppState {
         pool: pool.clone(),
         settings: settings.clone(),
+        ledger,
     };
 
     // Build the router
@@ -134,6 +140,9 @@ async fn create_router(
         // Transaction routes
         .nest("/api/v1/transactions", handlers::transactions::transaction_routes())
 
+        // General-ledger journal posting through the swappable Ledger port
+        .nest("/api/v1/ledger", handlers::ledger::ledger_routes())
+
         // Security routes
         .nest("/api/v1/security", handlers::security::security_routes())
 
@@ -147,6 +156,24 @@ async fn create_router(
                 .layer(cors)
         )
         .with_state(app_state)
+}
+
+/// Construct the accounting core selected by `CORE_BACKEND` (modern | legacy).
+/// Both are HTTP peers; the URLs default to their local ports.
+fn build_ledger() -> std::sync::Arc<dyn ledger::Ledger> {
+    use std::sync::Arc;
+    match std::env::var("CORE_BACKEND").as_deref() {
+        Ok("legacy") => {
+            let url = std::env::var("LEGACY_CORE_URL")
+                .unwrap_or_else(|_| "http://localhost:8090".into());
+            Arc::new(ledger::legacy::LegacyLedger::new(url))
+        }
+        _ => {
+            let url = std::env::var("MODERN_CORE_URL")
+                .unwrap_or_else(|_| "http://localhost:8091".into());
+            Arc::new(ledger::modern::ModernLedger::new(url))
+        }
+    }
 }
 
 async fn init_logging(settings: &Settings) {

@@ -27,6 +27,37 @@ PostgreSQL** schema, running on a local **Kind (Kubernetes-in-Docker)** cluster.
 └──────────────────────────────┘
 ```
 
+## Pluggable accounting core (the Ledger port)
+
+The general-ledger posting is being split out behind a backend-agnostic
+**`Ledger` port** (`src/ledger/`), so nano-bank can post to either of two
+interchangeable core services, chosen at startup by `CORE_BACKEND`:
+
+```
+handlers/ledger.rs  ──►  Ledger (trait, neutral Account/Direction/Decimal)
+                          ├── ModernLedger ──HTTP──►  nano-bank-modern-core :8091 (Rust)
+                          └── LegacyLedger ──HTTP──►  nano-bank-legacy-core  :8090 (Java)
+```
+
+The port speaks semantic accounts (`bank`, `receivable`, `revenue`, …); each
+adapter maps them onto its backend's numbering. One representative flow is wired
+through it today:
+
+```bash
+# CORE_BACKEND=modern (default) MODERN_CORE_URL=http://localhost:8091
+# CORE_BACKEND=legacy          LEGACY_CORE_URL=http://localhost:8090
+curl -X POST localhost:8081/api/v1/ledger/journal -H 'content-type: application/json' -d '{
+  "lines":[
+    {"account":"bank","direction":"debit","amount":250.00},
+    {"account":"revenue","direction":"credit","amount":250.00}
+  ]}'
+curl localhost:8081/api/v1/ledger/balances
+```
+
+The same request posts to whichever core is configured. The card rails
+(`cards.rs`) still post directly to the local DB — routing those through the port
+(and retiring the local posting) is the next step.
+
 | Component | Tech |
 |-----------|------|
 | API server | Rust, [axum](https://github.com/tokio-rs/axum) 0.7, tokio |
