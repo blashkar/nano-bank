@@ -32,6 +32,11 @@ pub enum AppError {
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    /// An error proxied from an upstream service (e.g. the ledger core), keeping
+    /// its HTTP status so client/business errors aren't masked as 5xx.
+    #[error("{message}")]
+    Upstream { status: u16, message: String },
+
     #[error("Rate limit exceeded: {0}")]
     RateLimit(String),
 
@@ -84,6 +89,11 @@ impl IntoResponse for AppError {
             AppError::ServiceUnavailable(msg) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", msg.as_str())
             }
+            AppError::Upstream { status, message } => (
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+                "UPSTREAM_ERROR",
+                message.as_str(),
+            ),
             AppError::RateLimit(msg) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT", msg.as_str()),
             AppError::InsufficientFunds => (
                 StatusCode::BAD_REQUEST,

@@ -12,7 +12,24 @@ use serde::Deserialize;
 
 use crate::errors::AppError;
 use crate::handlers::AppState;
-use crate::ledger::{Account, AccountBalance, Direction, EntryLine, NewEntry, PostedEntry};
+use crate::ledger::{
+    Account, AccountBalance, Direction, EntryLine, LedgerError, NewEntry, PostedEntry,
+};
+
+/// Map a ledger-core failure to an HTTP error, preserving the upstream status so
+/// a business rejection (e.g. unbalanced → 422) isn't masked as a 5xx; a
+/// transport failure means the core is unreachable.
+fn ledger_error(e: LedgerError) -> AppError {
+    match e {
+        LedgerError::Backend { status, body } => AppError::Upstream {
+            status,
+            message: body,
+        },
+        LedgerError::Transport(msg) => {
+            AppError::ServiceUnavailable(format!("ledger core unreachable: {msg}"))
+        }
+    }
+}
 
 pub fn ledger_routes() -> Router<AppState> {
     Router::new()
@@ -58,7 +75,7 @@ async fn post_journal(
         .ledger
         .post_entry(entry)
         .await
-        .map_err(|e| AppError::ServiceUnavailable(e.to_string()))?;
+        .map_err(ledger_error)?;
     Ok(Json(posted))
 }
 
@@ -69,6 +86,6 @@ async fn get_balances(
         .ledger
         .balances()
         .await
-        .map_err(|e| AppError::ServiceUnavailable(e.to_string()))?;
+        .map_err(ledger_error)?;
     Ok(Json(balances))
 }
