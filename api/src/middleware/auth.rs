@@ -40,6 +40,9 @@ fn bearer_claims(parts: &Parts, state: &AppState) -> Result<Claims, AppError> {
 /// A cardholder authenticated on the consumer-app plane.
 pub struct AuthenticatedCustomer {
     pub customer_id: Uuid,
+    /// The login session this token belongs to (`user_sessions.session_id`).
+    /// `None` for tokens minted before sessions existed; logout no-ops on those.
+    pub session_id: Option<Uuid>,
 }
 
 #[async_trait]
@@ -53,7 +56,10 @@ impl FromRequestParts<AppState> for AuthenticatedCustomer {
         let claims = bearer_claims(parts, state)?;
         // A service token must never be accepted on a consumer endpoint.
         match (claims.role, claims.sub) {
-            (TokenRole::Customer, Some(customer_id)) => Ok(AuthenticatedCustomer { customer_id }),
+            (TokenRole::Customer, Some(customer_id)) => Ok(AuthenticatedCustomer {
+                customer_id,
+                session_id: claims.sid,
+            }),
             _ => Err(AppError::Authentication(
                 "A customer access token is required".to_string(),
             )),

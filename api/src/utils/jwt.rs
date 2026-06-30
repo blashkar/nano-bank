@@ -34,6 +34,10 @@ pub struct Claims {
     /// Subject — the customer's id for customer tokens; absent for service tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub: Option<Uuid>,
+    /// Session id (the revocable `user_sessions` row) for customer tokens; absent
+    /// for service tokens. Lets logout terminate exactly this session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<Uuid>,
     /// Trust plane this token authenticates.
     pub role: TokenRole,
     /// Issuer — must match `jwt.issuer`.
@@ -46,12 +50,14 @@ pub struct Claims {
 
 fn encode_claims(
     sub: Option<Uuid>,
+    sid: Option<Uuid>,
     role: TokenRole,
     jwt: &JwtSettings,
 ) -> Result<String, AppError> {
     let now = Utc::now().timestamp();
     let claims = Claims {
         sub,
+        sid,
         role,
         iss: jwt.issuer.clone(),
         iat: now,
@@ -66,14 +72,23 @@ fn encode_claims(
     .map_err(AppError::from)
 }
 
-/// Mint a customer (consumer-app) access token for `customer_id`.
-pub fn encode_access_token(customer_id: Uuid, jwt: &JwtSettings) -> Result<String, AppError> {
-    encode_claims(Some(customer_id), TokenRole::Customer, jwt)
+/// Mint a customer (consumer-app) access token bound to a login session.
+pub fn encode_access_token(
+    customer_id: Uuid,
+    session_id: Uuid,
+    jwt: &JwtSettings,
+) -> Result<String, AppError> {
+    encode_claims(
+        Some(customer_id),
+        Some(session_id),
+        TokenRole::Customer,
+        jwt,
+    )
 }
 
-/// Mint a service (network-plane) access token. No customer subject.
+/// Mint a service (network-plane) access token. No customer subject or session.
 pub fn encode_service_token(jwt: &JwtSettings) -> Result<String, AppError> {
-    encode_claims(None, TokenRole::Service, jwt)
+    encode_claims(None, None, TokenRole::Service, jwt)
 }
 
 /// Verify a token's signature, expiry, and issuer, returning its claims.

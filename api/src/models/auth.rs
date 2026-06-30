@@ -19,11 +19,29 @@ pub struct ServiceTokenRequest {
     pub client_secret: String,
 }
 
-/// Issued access token. `token_type` is always `"Bearer"`; `expires_in` is the
-/// token lifetime in seconds (mirrors `jwt.expires_in`). Used for both customer
-/// login and service-token issuance.
+/// Refresh request: exchange a (rotating) refresh token for a fresh access token.
+#[derive(Debug, Deserialize, Validate)]
+pub struct RefreshRequest {
+    #[validate(length(min = 1))]
+    pub refresh_token: String,
+}
+
+/// Customer login / refresh response: a short-lived `access_token` plus a
+/// `refresh_token` (rotated on each refresh) to mint the next access token.
+/// `token_type` is always `"Bearer"`; `expires_in` is the access-token lifetime
+/// in seconds (mirrors `jwt.expires_in`).
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
+}
+
+/// Service-token response (network plane). No refresh token — the network
+/// re-mints via client-credentials when its token expires.
+#[derive(Debug, Serialize)]
+pub struct AccessTokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,

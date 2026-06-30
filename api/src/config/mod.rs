@@ -119,7 +119,7 @@ impl Default for Settings {
             },
             jwt: JwtSettings {
                 secret: "your-super-secret-jwt-key-change-this-in-production".to_string(),
-                expires_in: 3600,           // 1 hour
+                expires_in: 900,            // 15 min (short-lived access token)
                 refresh_expires_in: 604800, // 1 week
                 issuer: "nano-bank".to_string(),
             },
