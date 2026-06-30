@@ -1,0 +1,32 @@
+meta {
+  name: Create Customer
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/customers
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "email": "jane.doe3@example.com",
+    "phone_number": "4161234567",
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "date_of_birth": "1990-05-15",
+    "sin": "123456789",
+    "password": "securepass123"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("customerId", res.body.customer_id);
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

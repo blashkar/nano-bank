@@ -1,0 +1,22 @@
+meta {
+  name: Capture Authorization
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/cards/capture
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "auth_id": "{{authId}}"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

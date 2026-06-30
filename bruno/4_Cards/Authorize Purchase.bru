@@ -1,0 +1,30 @@
+meta {
+  name: Authorize Purchase
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/cards/authorize
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "account_id": "{{accountId}}",
+    "amount": 99.99,
+    "merchant": "Tim Hortons"
+  }
+}
+
+script:post-response {
+  if (res.body.status === "approved") {
+    bru.setEnvVar("authId", res.body.auth_id);
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
