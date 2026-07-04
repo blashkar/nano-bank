@@ -11,15 +11,9 @@ use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::handlers::cards::{post_gl_entry, post_two_legged, reference_number};
 use crate::ledger::Account as GlAccount;
+use crate::models::interac::HandleType;
 
 use super::{Destination, Hold, PgTx, Rail, RailId, RailPosting};
-
-// TEMP until Task 5 — delete when models::interac::HandleType exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandleType {
-    Email,
-    Phone,
-}
 
 /// Interac's own synthetic system customer — SEPARATE from the card rails'
 /// `system@nano.bank`, because GL accounts are keyed by (customer, account_type)
