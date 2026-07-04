@@ -2,6 +2,7 @@ mod config;
 mod errors;
 mod handlers;
 mod ledger;
+mod rails;
 mod middleware;
 mod models;
 mod repositories;
@@ -76,6 +77,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // validation — a mid-run data wipe self-heals on the next card operation.
     if let Err(e) = handlers::cards::ensure_system_accounts(&pool).await {
         warn!("❌ Failed to bootstrap system GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
+    // Bootstrap the Interac rail's clearing/settlement GL accounts (idempotent;
+    // also re-resolved per request, so a mid-run wipe self-heals).
+    if let Err(e) = rails::interac::ensure_interac_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap Interac GL accounts: {}", e);
         std::process::exit(1);
     }
 
