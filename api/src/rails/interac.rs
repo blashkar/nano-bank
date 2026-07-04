@@ -1,12 +1,18 @@
 //! Interac e-Transfer rail: the clearing/settlement plumbing. The product
 //! lifecycle lives in `handlers/interac.rs`.
 
+use async_trait::async_trait;
 use rust_decimal::Decimal;
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::config::database::DatabasePool;
+use crate::errors::AppError;
+use crate::handlers::AppState;
+use crate::handlers::cards::{post_gl_entry, post_two_legged, reference_number};
+use crate::ledger::Account as GlAccount;
 
-use super::{Hold, RailId};
+use super::{Destination, Hold, PgTx, Rail, RailId, RailPosting};
 
 // TEMP until Task 5 — delete when models::interac::HandleType exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,11 +128,126 @@ async fn ensure_gl_account(
     .await
 }
 
-// keep the Hold type referenced so imports don't rot before Task 4
-#[allow(unused_imports)]
-use super::Destination as _Destination;
-#[allow(dead_code)]
-fn _hold_marker(_: &Hold) {}
+/// Create a completed `transactions` row for one rail movement; return its id.
+async fn new_txn(
+    tx: &mut PgTx<'_>,
+    reference: &str,
+    txn_type: &str,
+    amount: Decimal,
+    description: &str,
+    initiated_by: Option<Uuid>,
+) -> Result<Uuid, AppError> {
+    let id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO transactions
+            (reference_number, transaction_type, amount, description, status,
+             initiated_by, completed_at, metadata)
+        VALUES ($1, $2, $3, $4, 'completed', $5, CURRENT_TIMESTAMP, $6)
+        RETURNING transaction_id
+        "#,
+    )
+    .bind(reference)
+    .bind(txn_type)
+    .bind(amount)
+    .bind(description)
+    .bind(initiated_by)
+    .bind(json!({ "rail": "interac" }))
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(id)
+}
+
+async fn tag_gl(tx: &mut PgTx<'_>, txn_id: Uuid, gl: &str) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), \
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .bind(gl)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+#[async_trait]
+impl Rail for InteracRail {
+    fn id(&self) -> RailId {
+        RailId::Interac
+    }
+
+    async fn hold(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        from: Uuid,
+        amount: Decimal,
+        description: &str,
+    ) -> Result<Hold, AppError> {
+        let reference = reference_number("ETRH");
+        let txn_id = new_txn(tx, &reference, "interac_hold", amount, description, None).await?;
+        // Dr from / Cr INTERAC_CLEARING (holds the funds).
+        post_two_legged(tx, txn_id, from, "debit", self.accounts.clearing_id, "credit", amount).await?;
+        // Aggregate GL: owed-to-customer → owed-to-clearing (Payable/Payable).
+        let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Payable, amount).await?;
+        tag_gl(tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
+        Ok(Hold { from_account: from, amount, reference, transaction_id: txn_id })
+    }
+
+    async fn release(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        hold: &Hold,
+        dest: Destination,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
+        let reference = reference_number("ETRR");
+        let txn_id = new_txn(tx, &reference, "interac_release", hold.amount, description, None).await?;
+        let credit_account = match dest {
+            Destination::Internal(acct) => acct,
+            Destination::External(_) => self.accounts.settlement_id,
+        };
+        // Dr INTERAC_CLEARING / Cr destination (recipient or settlement).
+        post_two_legged(tx, txn_id, self.accounts.clearing_id, "debit", credit_account, "credit", hold.amount).await?;
+        let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Payable, hold.amount).await?;
+        tag_gl(tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
+        Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(format!("{}:{}", gl.backend, gl.id)) })
+    }
+
+    async fn refund(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        hold: &Hold,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
+        let reference = reference_number("ETRX");
+        let txn_id = new_txn(tx, &reference, "interac_refund", hold.amount, description, None).await?;
+        // Dr INTERAC_CLEARING / Cr origin (sender for outbound; settlement for inbound).
+        post_two_legged(tx, txn_id, self.accounts.clearing_id, "debit", hold.from_account, "credit", hold.amount).await?;
+        let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Payable, hold.amount).await?;
+        tag_gl(tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
+        Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(format!("{}:{}", gl.backend, gl.id)) })
+    }
+
+    async fn accept_inbound(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        to: Uuid,
+        amount: Decimal,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
+        let reference = reference_number("ETRI");
+        let txn_id = new_txn(tx, &reference, "interac_inbound", amount, description, None).await?;
+        // Dr INTERAC_SETTLEMENT / Cr recipient (network → customer).
+        post_two_legged(tx, txn_id, self.accounts.settlement_id, "debit", to, "credit", amount).await?;
+        // GL: network owes us (Receivable) → customer payable.
+        let gl = post_gl_entry(state, &reference, description, GlAccount::Receivable, GlAccount::Payable, amount).await?;
+        tag_gl(tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
+        Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(format!("{}:{}", gl.backend, gl.id)) })
+    }
+}
 
 #[cfg(test)]
 mod tests {
