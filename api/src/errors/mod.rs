@@ -64,6 +64,16 @@ pub enum AppError {
     #[error("Session expired")]
     SessionExpired,
 
+    /// The mandate behind an agent token is revoked, expired, or its agent is
+    /// disabled — the credential chain is dead (401, like `SessionExpired`).
+    #[error("Mandate is not active")]
+    MandateInactive,
+
+    /// A valid agent identity asked for something its mandate doesn't allow.
+    /// Carries a machine-readable reason code (e.g. `SCOPE_MISSING`).
+    #[error("Denied by policy: {0}")]
+    PolicyDenied(String),
+
     #[error("Device not trusted")]
     DeviceNotTrusted,
 
@@ -79,16 +89,26 @@ impl IntoResponse for AppError {
                 "DATABASE_ERROR",
                 "A database error occurred",
             ),
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.as_str()),
+            AppError::Validation(msg) => {
+                (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.as_str())
+            }
             AppError::Authentication(msg) => (StatusCode::UNAUTHORIZED, "AUTH_ERROR", msg.as_str()),
-            AppError::Authorization(msg) => (StatusCode::FORBIDDEN, "AUTHORIZATION_ERROR", msg.as_str()),
+            AppError::Authorization(msg) => {
+                (StatusCode::FORBIDDEN, "AUTHORIZATION_ERROR", msg.as_str())
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.as_str()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.as_str()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.as_str()),
-            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg.as_str()),
-            AppError::ServiceUnavailable(msg) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", msg.as_str())
-            }
+            AppError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                msg.as_str(),
+            ),
+            AppError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                msg.as_str(),
+            ),
             AppError::Upstream { status, message } => (
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
                 "UPSTREAM_ERROR",
@@ -135,6 +155,14 @@ impl IntoResponse for AppError {
                 "SESSION_EXPIRED",
                 "Session has expired",
             ),
+            AppError::MandateInactive => (
+                StatusCode::UNAUTHORIZED,
+                "MANDATE_INACTIVE",
+                "The mandate behind this token is not active",
+            ),
+            AppError::PolicyDenied(reason) => {
+                (StatusCode::FORBIDDEN, "POLICY_DENIED", reason.as_str())
+            }
             AppError::DeviceNotTrusted => (
                 StatusCode::FORBIDDEN,
                 "DEVICE_NOT_TRUSTED",

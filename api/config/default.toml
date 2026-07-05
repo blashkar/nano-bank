@@ -18,6 +18,8 @@ secret = "your-super-secret-jwt-key-change-this-in-production"
 # Short-lived access token (15 min). Refresh rotates within refresh_expires_in.
 expires_in = 900
 refresh_expires_in = 604800
+# Agent tokens are pointers to a revocable mandate; keep them tight (5 min).
+agent_expires_in = 300
 issuer = "nano-bank"
 
 [security]

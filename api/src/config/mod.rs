@@ -38,6 +38,10 @@ pub struct JwtSettings {
     pub secret: String,
     pub expires_in: i64,
     pub refresh_expires_in: i64,
+    /// TTL for agent-plane tokens. Deliberately shorter than `expires_in`: an
+    /// agent token is a pointer to a revocable mandate, re-validated on every
+    /// request, so a tight expiry costs the agent only a cheap re-mint.
+    pub agent_expires_in: i64,
     pub issuer: String,
 }
 
@@ -121,6 +125,7 @@ impl Default for Settings {
                 secret: "your-super-secret-jwt-key-change-this-in-production".to_string(),
                 expires_in: 900,            // 15 min (short-lived access token)
                 refresh_expires_in: 604800, // 1 week
+                agent_expires_in: 300,      // 5 min (agent tokens are mandate pointers)
                 issuer: "nano-bank".to_string(),
             },
             security: SecuritySettings {
