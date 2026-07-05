@@ -85,22 +85,238 @@ async fn recompute_available(
     Ok(())
 }
 
+// --- batch/entry helpers ---
+
+/// Get the single open outbound batch (creating one if none), locked FOR UPDATE.
+async fn open_batch(tx: &mut crate::rails::PgTx<'_>) -> Result<Uuid, AppError> {
+    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+        "SELECT batch_id FROM aft_batches WHERE status='open' AND direction='outbound' \
+         ORDER BY created_at LIMIT 1 FOR UPDATE",
+    )
+    .fetch_optional(&mut **tx)
+    .await?
+    {
+        return Ok(id);
+    }
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO aft_batches (direction, status) VALUES ('outbound','open') RETURNING batch_id",
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(id)
+}
+
+async fn bump_batch(
+    tx: &mut crate::rails::PgTx<'_>,
+    batch_id: Uuid,
+    credit: Decimal,
+    debit: Decimal,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE aft_batches SET entry_count = entry_count + 1, \
+         total_credits = total_credits + $2, total_debits = total_debits + $3 WHERE batch_id = $1",
+    )
+    .bind(batch_id)
+    .bind(credit)
+    .bind(debit)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn load_entry(state: &AppState, entry_id: Uuid) -> Result<EntryResponse, AppError> {
+    let r = sqlx::query_as::<_, (Uuid, Uuid, String, String, Decimal, String, Option<String>, Option<String>)>(
+        "SELECT entry_id, batch_id, kind::text, direction::text, amount, status::text, payee_name, return_reason \
+         FROM aft_entries WHERE entry_id = $1",
+    )
+    .bind(entry_id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(EntryResponse {
+        entry_id: r.0, batch_id: r.1, kind: r.2, direction: r.3,
+        amount: r.4, status: r.5, payee_name: r.6, return_reason: r.7,
+    })
+}
+
+async fn caller_owns_account(state: &AppState, account_id: Uuid, customer_id: Uuid) -> Result<bool, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1 AND customer_id=$2)",
+    )
+    .bind(account_id)
+    .bind(customer_id)
+    .fetch_one(&state.pool)
+    .await?)
+}
+
 // --- handlers (stubs replaced task-by-task) ---
 
-async fn create_mandate() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn create_mandate(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    AxumJson(req): AxumJson<CreateMandateRequest>,
+) -> Result<(StatusCode, Json<MandateResponse>), AppError> {
+    req.validate()?;
+    let amount_cap = normalize_amount(req.amount_cap)?;
+    let owns: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1 AND customer_id=$2)",
+    )
+    .bind(req.payer_account_id)
+    .bind(caller.customer_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !owns {
+        return Err(AppError::NotFound("payer account not found".into()));
+    }
+    let freq = req.frequency.clone().unwrap_or_else(|| "monthly".to_string());
+    let row = sqlx::query_as::<_, (Uuid, String)>(
+        "INSERT INTO pad_mandates (payer_account_id, biller_name, originator_id, amount_cap, frequency) \
+         VALUES ($1,$2,$3,$4,$5) RETURNING mandate_id, status::text",
+    )
+    .bind(req.payer_account_id)
+    .bind(&req.biller_name)
+    .bind(&req.originator_id)
+    .bind(amount_cap)
+    .bind(&freq)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(MandateResponse {
+            mandate_id: row.0,
+            payer_account_id: req.payer_account_id,
+            biller_name: req.biller_name,
+            amount_cap,
+            status: row.1,
+        }),
+    ))
 }
-async fn list_mandates() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+
+async fn list_mandates(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+) -> Result<Json<Vec<MandateResponse>>, AppError> {
+    let rows = sqlx::query_as::<_, (Uuid, Uuid, String, Decimal, String)>(
+        "SELECT m.mandate_id, m.payer_account_id, m.biller_name, m.amount_cap, m.status::text \
+         FROM pad_mandates m JOIN accounts a ON a.account_id = m.payer_account_id \
+         WHERE a.customer_id = $1 ORDER BY m.created_at DESC",
+    )
+    .bind(caller.customer_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| MandateResponse {
+                mandate_id: r.0,
+                payer_account_id: r.1,
+                biller_name: r.2,
+                amount_cap: r.3,
+                status: r.4,
+            })
+            .collect(),
+    ))
 }
-async fn revoke_mandate() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+
+async fn revoke_mandate(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    Path(mandate_id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let n = sqlx::query(
+        "UPDATE pad_mandates SET status='revoked', revoked_at=CURRENT_TIMESTAMP \
+         WHERE mandate_id=$1 AND status='active' \
+           AND payer_account_id IN (SELECT account_id FROM accounts WHERE customer_id=$2)",
+    )
+    .bind(mandate_id)
+    .bind(caller.customer_id)
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound("mandate not found".into()));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
-async fn create_credit() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn create_credit(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    AxumJson(req): AxumJson<CreateCreditRequest>,
+) -> Result<(StatusCode, Json<EntryResponse>), AppError> {
+    req.validate()?;
+    let amount = normalize_amount(req.amount)?;
+    if !caller_owns_account(&state, req.originator_account_id, caller.customer_id).await? {
+        return Err(AppError::NotFound("originator account not found".into()));
+    }
+    let mut tx = state.pool.begin().await?;
+    let batch_id = open_batch(&mut tx).await?;
+    let entry_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO aft_entries (batch_id, kind, direction, originator_account_id, \
+         counterparty_institution, counterparty_transit, counterparty_account, payee_name, amount) \
+         VALUES ($1,'credit','outbound',$2,$3,$4,$5,$6,$7) RETURNING entry_id",
+    )
+    .bind(batch_id)
+    .bind(req.originator_account_id)
+    .bind(&req.counterparty_institution)
+    .bind(&req.counterparty_transit)
+    .bind(&req.counterparty_account)
+    .bind(&req.payee_name)
+    .bind(amount)
+    .fetch_one(&mut *tx)
+    .await?;
+    bump_batch(&mut tx, batch_id, amount, Decimal::ZERO).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
 }
-async fn create_debit() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+
+async fn create_debit(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    AxumJson(req): AxumJson<CreateDebitRequest>,
+) -> Result<(StatusCode, Json<EntryResponse>), AppError> {
+    req.validate()?;
+    let amount = normalize_amount(req.amount)?;
+    // The biller's collecting account must belong to the caller.
+    if !caller_owns_account(&state, req.originator_account_id, caller.customer_id).await? {
+        return Err(AppError::NotFound("originator account not found".into()));
+    }
+    // Mandate must be active and its cap must cover the amount.
+    let mandate = sqlx::query_as::<_, (Decimal, Uuid)>(
+        "SELECT amount_cap, payer_account_id FROM pad_mandates WHERE mandate_id=$1 AND status='active'",
+    )
+    .bind(req.mandate_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("active mandate not found".into()))?;
+    if amount > mandate.0 {
+        return Err(AppError::BadRequest("amount exceeds mandate cap".into()));
+    }
+    // The payer is a nano-bank account (intra-bank PAD); record its routing for the file.
+    let payer = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT institution_number, transit_number, account_number FROM accounts WHERE account_id=$1",
+    )
+    .bind(mandate.1)
+    .fetch_one(&state.pool)
+    .await?;
+    let mut tx = state.pool.begin().await?;
+    let batch_id = open_batch(&mut tx).await?;
+    let entry_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO aft_entries (batch_id, kind, direction, originator_account_id, counterparty_account_id, \
+         counterparty_institution, counterparty_transit, counterparty_account, payee_name, amount, mandate_id) \
+         VALUES ($1,'debit','outbound',$2,$3,$4,$5,$6,$7,$8,$9) RETURNING entry_id",
+    )
+    .bind(batch_id)
+    .bind(req.originator_account_id)
+    .bind(mandate.1)
+    .bind(&payer.0)
+    .bind(&payer.1)
+    .bind(&payer.2)
+    .bind("PAD DEBIT")
+    .bind(amount)
+    .bind(req.mandate_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    bump_batch(&mut tx, batch_id, Decimal::ZERO, amount).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
 }
 async fn list_batches() -> Result<StatusCode, AppError> {
     Err(AppError::Internal("todo".into()))
