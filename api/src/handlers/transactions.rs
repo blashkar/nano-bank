@@ -663,6 +663,17 @@ async fn get_transactions(
     auth: AuthenticatedCustomer,
     Query(q): Query<TransactionHistoryQuery>,
 ) -> Result<Json<TransactionHistoryResponse>, AppError> {
+    fetch_history(&state, auth.customer_id, q).await.map(Json)
+}
+
+/// The history query itself, shared by the customer handler above and the
+/// agent surface (`handlers/agent_api.rs`, which pins `q.account_id` to the
+/// mandate's account). Always scoped to `customer_id`'s own accounts.
+pub(crate) async fn fetch_history(
+    state: &AppState,
+    customer_id: Uuid,
+    q: TransactionHistoryQuery,
+) -> Result<TransactionHistoryResponse, AppError> {
     let limit = q.limit.unwrap_or(DEFAULT_HISTORY_LIMIT).clamp(1, 100);
     let offset = q.offset.unwrap_or(0);
 
@@ -672,7 +683,7 @@ async fn get_transactions(
     let count_base = "SELECT COUNT(DISTINCT t.transaction_id) FROM transactions t \
          JOIN transaction_entries e ON e.transaction_id = t.transaction_id";
     let mut count_qb = QueryBuilder::<Postgres>::new(count_base);
-    push_filters(&mut count_qb, &q, auth.customer_id);
+    push_filters(&mut count_qb, &q, customer_id);
     let total: i64 = count_qb
         .build_query_scalar()
         .fetch_one(&state.pool)
@@ -685,7 +696,7 @@ async fn get_transactions(
          JOIN transaction_entries e ON e.transaction_id = t.transaction_id"
     );
     let mut page_qb = QueryBuilder::<Postgres>::new(page_base);
-    push_filters(&mut page_qb, &q, auth.customer_id);
+    push_filters(&mut page_qb, &q, customer_id);
     page_qb.push(" ORDER BY t.created_at DESC LIMIT ");
     page_qb.push_bind(limit as i64);
     page_qb.push(" OFFSET ");
@@ -717,7 +728,7 @@ async fn get_transactions(
 
     let returned = transactions.len() as i64;
     let has_more = offset as i64 + returned < total;
-    Ok(Json(TransactionHistoryResponse {
+    Ok(TransactionHistoryResponse {
         transactions,
         total_count: total.max(0) as u64,
         has_more,
@@ -726,7 +737,7 @@ async fn get_transactions(
         } else {
             None
         },
-    }))
+    })
 }
 
 fn push_filters(

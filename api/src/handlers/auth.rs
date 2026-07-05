@@ -12,16 +12,19 @@ use validator::Validate;
 use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::middleware::auth::AuthenticatedCustomer;
+use crate::models::agent::AgentTokenRequest;
 use crate::models::auth::{
     AccessTokenResponse, LoginRequest, LoginResponse, RefreshRequest, ServiceTokenRequest,
 };
-use crate::utils::jwt::{encode_access_token, encode_service_token};
+use crate::policy;
+use crate::utils::jwt::{encode_access_token, encode_agent_token, encode_service_token};
 use crate::utils::password::verify_password;
 
 pub fn auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/service-token", post(issue_service_token))
+        .route("/agent-token", post(issue_agent_token))
         .route("/refresh", post(refresh_token))
         .route("/logout", post(logout))
 }
@@ -109,6 +112,97 @@ async fn issue_service_token(
             access_token,
             token_type: "Bearer".to_string(),
             expires_in: state.settings.jwt.expires_in,
+        }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// agent token (agent plane)
+// ---------------------------------------------------------------------------
+
+/// Issue an agent-plane token (client-credentials style): the agent presents
+/// its own secret and names the mandate it wants to act under.
+///
+/// The minted JWT is a short-lived *pointer* (`sub` = agent, `act` = customer,
+/// `mnd` = mandate) — scopes and limits stay in the mandate row, which is
+/// re-read on every request, so revocation needs no blocklist. Credential
+/// failures are a generic 401 (no enumeration, like login); a real-but-dead
+/// grant is 401 `MANDATE_INACTIVE` and is audited as a denied `token:issue`.
+async fn issue_agent_token(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentTokenRequest>,
+) -> Result<(StatusCode, Json<AccessTokenResponse>), AppError> {
+    payload.validate()?;
+
+    // Authenticate the agent: SHA-256 the presented secret (pgcrypto, the same
+    // digest used at registration) and compare in constant time.
+    let agent: Option<(String, String)> =
+        sqlx::query_as("SELECT secret_hash, status FROM agents WHERE agent_id = $1")
+            .bind(payload.agent_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+    let presented_hash: String = sqlx::query_scalar("SELECT encode(digest($1, 'sha256'), 'hex')")
+        .bind(&payload.agent_secret)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    let invalid = || AppError::Authentication("Invalid agent credentials".to_string());
+    let (secret_hash, agent_status) = agent.ok_or_else(invalid)?;
+    if !constant_time_eq(secret_hash.as_bytes(), presented_hash.as_bytes()) {
+        return Err(invalid());
+    }
+
+    // Resolve the named mandate; it must be this agent's. A mandate that isn't
+    // (or doesn't exist) gets the same answer, so agents can't probe ids.
+    let mandate: Option<(Uuid, Uuid, String, bool)> = sqlx::query_as(
+        "SELECT customer_id, account_id, status, expires_at <= CURRENT_TIMESTAMP \
+         FROM mandates WHERE mandate_id = $1 AND agent_id = $2",
+    )
+    .bind(payload.mandate_id)
+    .bind(payload.agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let Some((customer_id, account_id, m_status, expired)) = mandate else {
+        return Err(AppError::MandateInactive);
+    };
+
+    let alive = agent_status == "active" && m_status == "active" && !expired;
+    policy::record_action(
+        &state.pool,
+        payload.mandate_id,
+        payload.agent_id,
+        customer_id,
+        account_id,
+        "token:issue",
+        None,
+        if alive { "allowed" } else { "denied" },
+        (!alive).then_some("MANDATE_INACTIVE"),
+        None,
+    )
+    .await
+    .map_err(AppError::Database)?;
+    if !alive {
+        return Err(AppError::MandateInactive);
+    }
+
+    let access_token = encode_agent_token(
+        payload.agent_id,
+        customer_id,
+        payload.mandate_id,
+        &state.settings.jwt,
+    )?;
+
+    tracing::info!(agent_id = %payload.agent_id, mandate_id = %payload.mandate_id, "🔑 agent token issued");
+
+    Ok((
+        StatusCode::OK,
+        Json(AccessTokenResponse {
+            access_token,
+            token_type: "Bearer".to_string(),
+            expires_in: state.settings.jwt.agent_expires_in,
         }),
     ))
 }

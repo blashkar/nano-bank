@@ -4,6 +4,7 @@ mod handlers;
 mod ledger;
 mod middleware;
 mod models;
+mod policy;
 mod repositories;
 mod services;
 mod utils;
@@ -43,7 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🏦 Starting Nano Bank API Server");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
-    info!("Environment: {}", std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into()));
+    info!(
+        "Environment: {}",
+        std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into())
+    );
 
     // Create database connection pool
     let pool = match create_connection_pool(&settings).await {
@@ -86,8 +90,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&settings.server_address()).await?;
 
     info!("🚀 Server running on http://{}", settings.server_address());
-    info!("📖 API Documentation: http://{}/docs", settings.server_address());
-    info!("💚 Health Check: http://{}/health", settings.server_address());
+    info!(
+        "📖 API Documentation: http://{}/docs",
+        settings.server_address()
+    );
+    info!(
+        "💚 Health Check: http://{}/health",
+        settings.server_address()
+    );
 
     // `into_make_service_with_connect_info` exposes the peer address to handlers
     // via `ConnectInfo<SocketAddr>` — needed to record client IPs on login
@@ -101,10 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn create_router(
-    pool: config::database::DatabasePool,
-    settings: &Settings,
-) -> Router {
+async fn create_router(pool: config::database::DatabasePool, settings: &Settings) -> Router {
     // CORS configuration for web frontend
     let cors = CorsLayer::new()
         .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
@@ -128,31 +135,31 @@ async fn create_router(
     Router::new()
         // Health check endpoint
         .route("/health", get(handlers::health::health_check))
-
         // API documentation
         .route("/docs", get(handlers::docs::api_docs))
-
         // Authentication routes
         .nest("/api/v1/auth", handlers::auth::auth_routes())
-
         // Customer routes
         .nest("/api/v1/customers", handlers::customers::customer_routes())
-
         // Account routes
         .nest("/api/v1/accounts", handlers::accounts::account_routes())
-
+        // Agentic banking: agent registration/metadata, consent mandates, and
+        // the mandate-scoped agent surface (no account params — the mandate
+        // pins the account)
+        .nest("/api/v1/agents", handlers::agents::agent_routes())
+        .nest("/api/v1/mandates", handlers::mandates::mandate_routes())
+        .nest("/api/v1/agent", handlers::agent_api::agent_api_routes())
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
-
         // Transaction routes
-        .nest("/api/v1/transactions", handlers::transactions::transaction_routes())
-
+        .nest(
+            "/api/v1/transactions",
+            handlers::transactions::transaction_routes(),
+        )
         // General-ledger journal posting through the swappable Ledger port
         .nest("/api/v1/ledger", handlers::ledger::ledger_routes())
-
         // Security routes
         .nest("/api/v1/security", handlers::security::security_routes())
-
         // Add middleware layers
         .layer(
             ServiceBuilder::new()
@@ -160,7 +167,7 @@ async fn create_router(
                 .layer(CompressionLayer::new())
                 .layer(TimeoutLayer::new(Duration::from_secs(30)))
                 .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB max request size
-                .layer(cors)
+                .layer(cors),
         )
         .with_state(app_state)
 }
@@ -171,13 +178,13 @@ fn build_ledger() -> std::sync::Arc<dyn ledger::Ledger> {
     use std::sync::Arc;
     match std::env::var("CORE_BACKEND").as_deref() {
         Ok("legacy") => {
-            let url = std::env::var("LEGACY_CORE_URL")
-                .unwrap_or_else(|_| "http://localhost:8090".into());
+            let url =
+                std::env::var("LEGACY_CORE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
             Arc::new(ledger::legacy::LegacyLedger::new(url))
         }
         _ => {
-            let url = std::env::var("MODERN_CORE_URL")
-                .unwrap_or_else(|_| "http://localhost:8091".into());
+            let url =
+                std::env::var("MODERN_CORE_URL").unwrap_or_else(|_| "http://localhost:8091".into());
             Arc::new(ledger::modern::ModernLedger::new(url))
         }
     }
@@ -198,6 +205,8 @@ async fn init_logging(settings: &Settings) {
         .with(tracing_subscriber::EnvFilter::new(&settings.logging.level))
         .init();
 
-    info!("🔍 Logging initialized - level: {}, format: {}",
-          settings.logging.level, settings.logging.format);
+    info!(
+        "🔍 Logging initialized - level: {}, format: {}",
+        settings.logging.level, settings.logging.format
+    );
 }
