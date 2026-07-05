@@ -23,6 +23,7 @@
 //! ```
 //! Override the base URL with `NANO_BANK_TEST_URL`.
 
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -515,6 +516,47 @@ async fn seed_deposit(c: &reqwest::Client, token: &str, amount: f64) -> Option<(
     Some((account, txn_id(resp).await))
 }
 
+/// The Revenue GL balance as the configured core reports it, black-box via the
+/// API's own (unauthenticated) `GET /api/v1/ledger/balances`. `None` means the
+/// endpoint failed or no revenue account exists yet — the caller skips its GL
+/// assertion in that case. The modern core names it `REVENUE`, the legacy core
+/// `0000800000`; match either.
+async fn revenue_gl_balance(c: &reqwest::Client) -> Option<f64> {
+    let resp = c
+        .get(format!("{}/api/v1/ledger/balances", base_url()))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let rows: Value = resp.json().await.ok()?;
+    rows.as_array()?.iter().find_map(|r| {
+        let name = r["account"].as_str()?;
+        if name == "REVENUE" || name == "0000800000" {
+            Some(as_num(&r["balance"]))
+        } else {
+            None
+        }
+    })
+}
+
+/// Lazily connect to the test Postgres so the fee test can assert rows the HTTP
+/// surface doesn't expose. `None` (with a SKIP note) if the DB is unreachable.
+/// Creds mirror `api/config/default.toml`; note the IPv6 `[::1]` host.
+async fn test_db() -> Option<sqlx::PgPool> {
+    let url = std::env::var("NANO_BANK_TEST_DB_URL").unwrap_or_else(|_| {
+        "postgres://nanobank_user:secure_nano_password_2024!@[::1]:5432/nano_bank_db".to_string()
+    });
+    match sqlx::PgPool::connect(&url).await {
+        Ok(pool) => Some(pool),
+        Err(e) => {
+            println!("SKIP: DB unreachable ({e})");
+            None
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Single fetch: scoped to the caller
 // ---------------------------------------------------------------------------
@@ -559,6 +601,9 @@ async fn transfer_charges_a_flat_fee() {
     };
     let b = create_account(&c, &token, "savings").await;
 
+    // Sample the Revenue GL before the transfer so we can assert the fee posted.
+    let revenue_before = revenue_gl_balance(&c).await;
+
     let resp = post_json(
         &c,
         &token,
@@ -567,6 +612,7 @@ async fn transfer_charges_a_flat_fee() {
     )
     .await;
     assert_eq!(resp.status().as_u16(), 201);
+    let transfer_id = txn_id(resp).await;
     // Funding account loses amount + $1.50 fee; recipient gets the full amount.
     assert_eq!(balance(&c, &token, a).await, 598.5);
     assert_eq!(balance(&c, &token, b).await, 400.0);
@@ -583,6 +629,60 @@ async fn transfer_charges_a_flat_fee() {
         types.contains(&"fee"),
         "history should include the fee txn: {types:?}"
     );
+
+    // GL effect: the fee is recognised as Revenue at the core. Assert the
+    // *magnitude* of the move (>= the $1.50 fee), which is agnostic to the core's
+    // sign convention — the modern core reports Revenue credit-normal (a fee
+    // makes it more negative), the legacy core may report it the other way.
+    // Revenue is only ever credited (by fees, never debited/reversed), so it
+    // moves one direction only and parallel fees can't cancel the delta.
+    match (revenue_before, revenue_gl_balance(&c).await) {
+        (before, Some(after)) => {
+            let before = before.unwrap_or(0.0);
+            assert!(
+                (after - before).abs() >= 1.50 - 1e-6,
+                "Revenue GL should move by at least the $1.50 fee: {before} -> {after}"
+            );
+        }
+        _ => println!("SKIP: /ledger/balances unavailable or no revenue account yet"),
+    }
+
+    // DB effect: the `transaction_fees` row (linked to the transfer) and the
+    // `gl_entry` recorded on the *fee* txn — neither is on the HTTP surface, so a
+    // black-box test alone would still pass if either post were deleted.
+    if let Some(pool) = test_db().await {
+        let fee_rows: Vec<(String, Decimal)> = sqlx::query_as(
+            "SELECT fee_type, fee_amount FROM transaction_fees WHERE transaction_id = $1",
+        )
+        .bind(transfer_id)
+        .fetch_all(&pool)
+        .await
+        .expect("query transaction_fees");
+        assert_eq!(fee_rows.len(), 1, "exactly one fee row for the transfer");
+        assert_eq!(fee_rows[0].0, "transfer");
+        assert_eq!(fee_rows[0].1, Decimal::new(150, 2));
+
+        // The fee's own txn carries the GL document id in metadata.gl_entry.
+        let fee_txn_id = v["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["transaction_type"] == "fee")
+            .and_then(|t| t["transaction_id"].as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .expect("history exposes the fee txn id");
+        let gl_entry: Option<String> = sqlx::query_scalar(
+            "SELECT metadata->>'gl_entry' FROM transactions WHERE transaction_id = $1",
+        )
+        .bind(fee_txn_id)
+        .fetch_one(&pool)
+        .await
+        .expect("query fee txn metadata");
+        assert!(
+            gl_entry.is_some_and(|s| !s.is_empty()),
+            "the fee txn should record a non-empty gl_entry"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
