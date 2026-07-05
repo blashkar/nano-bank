@@ -6,6 +6,7 @@
 //! The trait's verbs are the clearing/settlement plumbing common to every rail;
 //! product lifecycle (Interac's claim/decline/expiry) lives in the handler.
 
+pub mod aft;
 pub mod interac;
 
 use async_trait::async_trait;

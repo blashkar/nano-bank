@@ -87,6 +87,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Bootstrap the AFT rail's clearing/settlement GL accounts (idempotent).
+    if let Err(e) = rails::aft::ensure_aft_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap AFT GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
     // Create application router
     let app = create_router(pool, &settings).await;
 
