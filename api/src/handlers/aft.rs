@@ -162,6 +162,42 @@ async fn caller_owns_account(state: &AppState, account_id: Uuid, customer_id: Uu
     .await?)
 }
 
+/// A CPA-005 file carried in a JSON body (network inbound / returns).
+#[derive(serde::Deserialize)]
+struct FileRequest {
+    file: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_inbound_entry(
+    tx: &mut crate::rails::PgTx<'_>,
+    batch_id: Uuid,
+    kind: &str,
+    originator_account: Uuid,
+    payee: &str,
+    amount: Decimal,
+    status: &str,
+    return_reason: Option<&str>,
+    settle_txn: Option<Uuid>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO aft_entries (batch_id, kind, direction, originator_account_id, payee_name, \
+         amount, status, return_reason, settle_transaction_id) \
+         VALUES ($1,$2::aft_entry_kind,'inbound',$3,$4,$5,$6::aft_entry_status,$7,$8)",
+    )
+    .bind(batch_id)
+    .bind(kind)
+    .bind(originator_account)
+    .bind(payee)
+    .bind(amount)
+    .bind(status)
+    .bind(return_reason)
+    .bind(settle_txn)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 // --- handlers (stubs replaced task-by-task) ---
 
 async fn create_mandate(
@@ -332,8 +368,27 @@ async fn create_debit(
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
 }
-async fn list_batches() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn list_batches(
+    State(state): State<AppState>,
+    _caller: AuthenticatedCustomer,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<BatchResponse>>, AppError> {
+    let status = params.get("status").cloned();
+    let rows = sqlx::query_as::<_, (Uuid, String, String, i32, Decimal, Decimal, Option<String>)>(
+        "SELECT batch_id, direction::text, status::text, entry_count, total_credits, total_debits, file_ref \
+         FROM aft_batches WHERE ($1::text IS NULL OR status::text=$1) ORDER BY created_at DESC LIMIT 100",
+    )
+    .bind(&status)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| BatchResponse {
+                batch_id: r.0, direction: r.1, status: r.2, entry_count: r.3,
+                total_credits: r.4, total_debits: r.5, file_ref: r.6,
+            })
+            .collect(),
+    ))
 }
 async fn submit_batch(
     State(state): State<AppState>,
@@ -408,8 +463,31 @@ async fn submit_batch(
     tracing::info!(%batch_id, entries = entry_count, file = %path, "📄 AFT batch submitted");
     Ok(Json(load_batch(&state, batch_id).await?))
 }
-async fn list_entries() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn list_entries(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<EntryResponse>>, AppError> {
+    let status = params.get("status").cloned();
+    let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String, Decimal, String, Option<String>, Option<String>)>(
+        "SELECT e.entry_id, e.batch_id, e.kind::text, e.direction::text, e.amount, e.status::text, \
+         e.payee_name, e.return_reason FROM aft_entries e \
+         JOIN accounts a ON a.account_id = e.originator_account_id \
+         WHERE a.customer_id=$1 AND ($2::text IS NULL OR e.status::text=$2) \
+         ORDER BY e.created_at DESC LIMIT 100",
+    )
+    .bind(caller.customer_id)
+    .bind(&status)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| EntryResponse {
+                entry_id: r.0, batch_id: r.1, kind: r.2, direction: r.3,
+                amount: r.4, status: r.5, payee_name: r.6, return_reason: r.7,
+            })
+            .collect(),
+    ))
 }
 async fn network_settle(
     State(state): State<AppState>,
@@ -503,9 +581,118 @@ async fn network_settle(
         "settled_entries": settled, "rejected": rejected, "swept_credits": settled_credit_total
     })))
 }
-async fn network_inbound_batch() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn network_inbound_batch(
+    State(state): State<AppState>,
+    _svc: AuthenticatedService,
+    AxumJson(req): AxumJson<FileRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let rail = resolve_aft(&state).await?;
+    let (_h, details, _t) =
+        cpa005::decode(&req.file).map_err(|e| AppError::BadRequest(format!("bad CPA-005: {e}")))?;
+    let mut tx = state.pool.begin().await?;
+    let batch_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO aft_batches (direction, status) VALUES ('inbound','settled') RETURNING batch_id",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let (mut credited, mut debited, mut rejected, mut unknown) = (0i64, 0i64, 0i64, 0i64);
+    for d in &details {
+        let target: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT account_id FROM accounts WHERE institution_number=$1 AND transit_number=$2 AND account_number=$3",
+        )
+        .bind(&d.institution)
+        .bind(&d.transit)
+        .bind(&d.account)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((acct,)) = target else {
+            unknown += 1;
+            continue;
+        };
+        if d.txn_code == 'C' {
+            let posting = rail.accept_inbound(&state, &mut tx, acct, d.amount, "AFT inbound credit").await?;
+            recompute_available(&mut tx, acct).await?;
+            insert_inbound_entry(&mut tx, batch_id, "credit", acct, &d.payee_name, d.amount, "settled", None, Some(posting.transaction_id)).await?;
+            credited += 1;
+        } else {
+            let a = fetch_account_for_update(&mut tx, acct)
+                .await?
+                .ok_or_else(|| AppError::Internal("target account gone".into()))?;
+            if d.amount > a.available_balance {
+                insert_inbound_entry(&mut tx, batch_id, "debit", acct, &d.payee_name, d.amount, "rejected", Some("NSF"), None).await?;
+                rejected += 1;
+                continue;
+            }
+            zero_available(&mut tx, acct).await?;
+            let hold = rail.hold(&state, &mut tx, acct, d.amount, "AFT inbound debit").await?;
+            rail.release(&state, &mut tx, &hold, Destination::External("000".into()), "AFT inbound debit").await?;
+            recompute_available(&mut tx, acct).await?;
+            insert_inbound_entry(&mut tx, batch_id, "debit", acct, &d.payee_name, d.amount, "settled", None, Some(hold.transaction_id)).await?;
+            debited += 1;
+        }
+    }
+    tx.commit().await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "batch_id": batch_id, "credited": credited, "debited": debited,
+            "rejected": rejected, "unknown": unknown
+        })),
+    ))
 }
-async fn network_returns() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+
+async fn network_returns(
+    State(state): State<AppState>,
+    _svc: AuthenticatedService,
+    AxumJson(req): AxumJson<FileRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let rail = resolve_aft(&state).await?;
+    let (_h, details, _t) =
+        cpa005::decode(&req.file).map_err(|e| AppError::BadRequest(format!("bad CPA-005: {e}")))?;
+    let mut tx = state.pool.begin().await?;
+    let mut returned = 0i64;
+    for d in &details {
+        let reason = d.return_reason.clone().unwrap_or_else(|| "RET".into());
+        // Match a settled entry by amount + external counterparty account (the
+        // primary return case: an outbound direct-deposit credit that bounced).
+        let row: Option<(Uuid, String, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+            "SELECT entry_id, kind::text, originator_account_id, counterparty_account_id \
+             FROM aft_entries WHERE status='settled' AND amount=$1 AND counterparty_account=$2 \
+             ORDER BY created_at LIMIT 1 FOR UPDATE",
+        )
+        .bind(d.amount)
+        .bind(&d.account)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((entry_id, kind, originator, counterparty_acct)) = row else {
+            continue;
+        };
+        let posting = if kind == "credit" {
+            // Funds return to the originator (Dr SETTLEMENT / Cr originator).
+            let orig = originator.ok_or_else(|| AppError::Internal("return: no originator".into()))?;
+            let p = rail.accept_inbound(&state, &mut tx, orig, d.amount, "AFT credit return").await?;
+            recompute_available(&mut tx, orig).await?;
+            p
+        } else {
+            // Reverse an intra-bank PAD: biller → payer.
+            let biller = originator.ok_or_else(|| AppError::Internal("return: no biller".into()))?;
+            let payer = counterparty_acct.ok_or_else(|| AppError::Internal("return: no payer".into()))?;
+            zero_available(&mut tx, biller).await?;
+            let hold = rail.hold(&state, &mut tx, biller, d.amount, "AFT debit return").await?;
+            let p = rail.release(&state, &mut tx, &hold, Destination::Internal(payer), "AFT debit return").await?;
+            recompute_available(&mut tx, biller).await?;
+            recompute_available(&mut tx, payer).await?;
+            p
+        };
+        sqlx::query("UPDATE aft_entries SET status='returned', return_reason=$2, return_transaction_id=$3 WHERE entry_id=$1")
+            .bind(entry_id)
+            .bind(&reason)
+            .bind(posting.transaction_id)
+            .execute(&mut *tx)
+            .await?;
+        returned += 1;
+    }
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "returned": returned })))
 }
