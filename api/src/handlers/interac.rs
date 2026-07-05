@@ -508,6 +508,15 @@ async fn decline_etransfer(
     let rail = resolve_interac(&state).await?;
     let mut tx = state.pool.begin().await?;
     let (amount, sender_account, _r, _h, _a, hold_ref) = lock_available(&mut tx, id).await?;
+    // Inbound held transfers have no sender_account_id (NULL in the DB, so
+    // lock_available's unwrap_or_default() yields Uuid::nil()); those were
+    // held from the rail's SETTLEMENT account (network → clearing), so
+    // that's where the refund must be credited back (mirrors sweep_expired).
+    let sender_account = if sender_account.is_nil() {
+        rail.accounts.settlement_id
+    } else {
+        sender_account
+    };
     let hold = crate::rails::Hold {
         from_account: sender_account,
         amount,
