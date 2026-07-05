@@ -503,7 +503,35 @@ async fn decline_etransfer(
     Ok((StatusCode::OK, Json(load_etransfer(&state, id).await?)))
 }
 
-async fn cancel_etransfer() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
+async fn cancel_etransfer(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    Path(id): Path<Uuid>,
+) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
+    let rail = resolve_interac(&state).await?;
+    let mut tx = state.pool.begin().await?;
+
+    // Ownership check folded into the lock: only the sender may cancel.
+    let sender: Option<Uuid> = sqlx::query_scalar(
+        "SELECT sender_customer_id FROM interac_etransfers WHERE etransfer_id=$1 FOR UPDATE")
+        .bind(id).fetch_optional(&mut *tx).await?
+        .ok_or_else(|| AppError::NotFound("e-Transfer not found".into()))?;
+    if sender != Some(caller.customer_id) {
+        return Err(AppError::NotFound("e-Transfer not found".into())); // 404, not 403
+    }
+    let (amount, sender_account, _r, _h, _a, hold_ref) = lock_available(&mut tx, id).await?;
+    let hold = crate::rails::Hold { from_account: sender_account, amount, reference: hold_ref, transaction_id: Uuid::nil() };
+    rail.refund(&state, &mut tx, &hold, "Interac e-Transfer cancelled").await?;
+    // Sender was just credited back (refund); refresh its available_balance too.
+    recompute_available(&mut tx, sender_account).await?;
+    sqlx::query("UPDATE interac_etransfers SET status='cancelled', resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
+        .bind(id).execute(&mut *tx).await?;
+    let handle: String = sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
+        .bind(id).fetch_one(&mut *tx).await?;
+    notify(&mut tx, id, &handle, "cancelled", &format!("${amount} transfer was cancelled"), None).await?;
+    tx.commit().await?;
+    Ok((StatusCode::OK, Json(load_etransfer(&state, id).await?)))
+}
 async fn register_autodeposit(
     State(state): State<AppState>,
     caller: AuthenticatedCustomer,
