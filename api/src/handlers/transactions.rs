@@ -28,7 +28,7 @@
 //! accounts belong to the card rails.
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
@@ -51,8 +51,9 @@ use crate::ledger::Account as GlAccount;
 use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::account::{Account, AccountStatus, AccountType};
 use crate::models::transaction::{
-    DepositRequest, MoneyTransferRequest, Transaction, TransactionEntry, TransactionEntryResponse,
-    TransactionHistoryQuery, TransactionHistoryResponse, TransactionResponse, WithdrawalRequest,
+    DepositRequest, MoneyTransferRequest, ReverseRequest, Transaction, TransactionEntry,
+    TransactionEntryResponse, TransactionHistoryQuery, TransactionHistoryResponse,
+    TransactionResponse, WithdrawalRequest,
 };
 
 const CASH_CUSTOMER_EMAIL: &str = "cash@nano.bank";
@@ -61,12 +62,19 @@ const CASH_ACCOUNT_TYPE: &str = "chequing";
 
 const DEFAULT_HISTORY_LIMIT: u32 = 50;
 
+/// Flat fee charged on an outbound transfer (placeholder schedule).
+fn transfer_fee() -> Decimal {
+    Decimal::new(150, 2) // $1.50
+}
+
 pub fn transaction_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(get_transactions))
         .route("/transfer", post(transfer_money))
         .route("/deposit", post(deposit_money))
         .route("/withdrawal", post(withdraw_money))
+        .route("/:id", get(get_transaction))
+        .route("/:id/reverse", post(reverse_transaction))
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +338,9 @@ async fn transfer_money(
         }
     }
 
+    let fee = transfer_fee();
+    let cash_id = ensure_external_cash_account(&state.pool).await?;
+
     let mut tx = state.pool.begin().await?;
 
     // Lock both accounts in a deterministic order (by id) to avoid deadlocks.
@@ -358,7 +369,11 @@ async fn transfer_money(
     ensure_operable(&from)?;
     ensure_operable(&to)?;
 
-    if from.available_balance < amount {
+    // Lock the fee counterparty (EXTERNAL_CASH) last, after the sorted account locks.
+    let _cash = fetch_account_for_update(&mut tx, cash_id).await?;
+
+    // The funding account must cover the amount *and* the fee.
+    if from.available_balance < amount + fee {
         return Err(AppError::InsufficientFunds);
     }
 
@@ -408,6 +423,56 @@ async fn transfer_money(
     record_summary(&mut tx, from.account_id, "debit", amount, from_balance).await?;
     record_summary(&mut tx, to.account_id, "credit", amount, to_balance).await?;
 
+    // Transfer fee: a separate `fee` transaction, funding account → EXTERNAL_CASH,
+    // with the fee recognised as Revenue at the GL. (Idempotent replays return
+    // early above, so a replayed transfer never double-charges.)
+    if fee > Decimal::ZERO {
+        let fee_ref = reference_number("FEE");
+        let fee_txn = insert_transaction(
+            &mut tx,
+            &fee_ref,
+            "fee",
+            fee,
+            &format!("transfer fee for {}", reference),
+            from.customer_id,
+            None,
+            json!({ "fee_for": txn_id }),
+        )
+        .await?;
+        set_available_zero(&mut tx, from.account_id).await?;
+        post_two_legged(
+            &mut tx,
+            fee_txn,
+            from.account_id,
+            "debit",
+            cash_id,
+            "credit",
+            fee,
+        )
+        .await?;
+        let fee_balance = account_balance(&mut tx, from.account_id).await?;
+        recompute_available(&mut tx, from.account_id).await?;
+        record_summary(&mut tx, from.account_id, "debit", fee, fee_balance).await?;
+        sqlx::query(
+            "INSERT INTO transaction_fees (transaction_id, fee_type, fee_amount) \
+             VALUES ($1, 'transfer', $2)",
+        )
+        .bind(txn_id)
+        .bind(fee)
+        .execute(&mut *tx)
+        .await?;
+        let gl = post_gl_entry(
+            &state,
+            &fee_ref,
+            "transfer fee",
+            GlAccount::Payable,
+            GlAccount::Revenue,
+            fee,
+        )
+        .await?;
+        tag_gl_entry(&mut tx, fee_txn, &format!("{}:{}", gl.backend, gl.id)).await?;
+    }
+
     sqlx::query(
         "UPDATE account_limits SET \
          daily_transfer_used = daily_transfer_used + $2, \
@@ -427,6 +492,218 @@ async fn transfer_money(
         "🔁 transfer posted"
     );
     let resp = load_transaction_response(&state.pool, txn_id).await?;
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+// ---------------------------------------------------------------------------
+// single fetch
+// ---------------------------------------------------------------------------
+
+/// Fetch one transaction the caller is party to (has a leg on one of their
+/// accounts). 404 otherwise, so a stranger's transaction is indistinguishable
+/// from a missing one.
+async fn get_transaction(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Path(txn_id): Path<Uuid>,
+) -> Result<Json<TransactionResponse>, AppError> {
+    let involved: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM transaction_entries e \
+         JOIN accounts a ON a.account_id = e.account_id \
+         WHERE e.transaction_id = $1 AND a.customer_id = $2)",
+    )
+    .bind(txn_id)
+    .bind(auth.customer_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    if !involved {
+        return Err(AppError::NotFound("transaction not found".to_string()));
+    }
+    let resp = load_transaction_response(&state.pool, txn_id).await?;
+    Ok(Json(resp))
+}
+
+// ---------------------------------------------------------------------------
+// reversal
+// ---------------------------------------------------------------------------
+
+/// Reverse a completed deposit/withdrawal/transfer by posting its mirror. Only
+/// the initiator may reverse it. v1: rejects rather than forcing a negative
+/// clawback, and does not refund a transfer fee.
+async fn reverse_transaction(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Path(txn_id): Path<Uuid>,
+    Json(req): Json<ReverseRequest>,
+) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
+    req.validate()?;
+    let reason = req
+        .reason
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| "customer reversal".to_string());
+
+    // Load the original. Initiator-only; 404 (not 403) so we don't leak existence.
+    let original: Option<(String, String, Option<Uuid>, Decimal)> = sqlx::query_as(
+        "SELECT transaction_type, status::text, initiated_by, amount \
+         FROM transactions WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let (otype, ostatus, initiated_by, amount) =
+        original.ok_or_else(|| AppError::NotFound("transaction not found".to_string()))?;
+    if initiated_by != Some(auth.customer_id) {
+        return Err(AppError::NotFound("transaction not found".to_string()));
+    }
+    if ostatus != "completed" {
+        return Err(AppError::BadRequest(
+            "only a completed transaction can be reversed".to_string(),
+        ));
+    }
+    if !matches!(otype.as_str(), "deposit" | "withdrawal" | "transfer") {
+        return Err(AppError::BadRequest(
+            "this transaction type cannot be reversed".to_string(),
+        ));
+    }
+
+    // The reversal swaps the original legs.
+    let legs: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT account_id, entry_type::text FROM transaction_entries WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let orig_debit = legs.iter().find(|(_, t)| t == "debit").map(|(a, _)| *a);
+    let orig_credit = legs.iter().find(|(_, t)| t == "credit").map(|(a, _)| *a);
+    let (Some(orig_debit), Some(orig_credit)) = (orig_debit, orig_credit) else {
+        return Err(AppError::BadRequest(
+            "transaction has no reversible legs".to_string(),
+        ));
+    };
+    let rev_debit = orig_credit; // debit what was credited …
+    let rev_credit = orig_debit; // … credit what was debited
+
+    let cash_id = ensure_external_cash_account(&state.pool).await?;
+
+    let mut tx = state.pool.begin().await?;
+
+    // Lock both accounts in ascending id order (matches the transfer path).
+    let (first, second) = if rev_debit < rev_credit {
+        (rev_debit, rev_credit)
+    } else {
+        (rev_credit, rev_debit)
+    };
+    fetch_account_for_update(&mut tx, first).await?;
+    fetch_account_for_update(&mut tx, second).await?;
+
+    // Guarded status transition: the first reverser wins; a concurrent second
+    // sees 0 rows updated and gets a 409 — no double clawback.
+    let marked = sqlx::query(
+        "UPDATE transactions SET status = 'reversed' \
+         WHERE transaction_id = $1 AND status = 'completed'",
+    )
+    .bind(txn_id)
+    .execute(&mut *tx)
+    .await?;
+    if marked.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "transaction has already been reversed".to_string(),
+        ));
+    }
+
+    // Funds check only on a *customer* debit — EXTERNAL_CASH carries a 1e12
+    // overdraft and is allowed to run negative.
+    if rev_debit != cash_id {
+        let debit_acct = fetch_account_for_update(&mut tx, rev_debit)
+            .await?
+            .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
+        if debit_acct.available_balance < amount {
+            return Err(AppError::InsufficientFunds);
+        }
+    }
+
+    let reference = reference_number("REV");
+    let rev_txn = insert_transaction(
+        &mut tx,
+        &reference,
+        "reversal",
+        amount,
+        &format!("reversal of {txn_id}: {reason}"),
+        auth.customer_id,
+        Some(&txn_id.to_string()),
+        json!({ "reverses": txn_id }),
+    )
+    .await?;
+
+    // Post the swapped legs. Floor only a customer debit's available first.
+    if rev_debit != cash_id {
+        set_available_zero(&mut tx, rev_debit).await?;
+    }
+    post_two_legged(
+        &mut tx, rev_txn, rev_debit, "debit", rev_credit, "credit", amount,
+    )
+    .await?;
+
+    // Recompute + summarise customer accounts only; leave EXTERNAL_CASH at 0.
+    for (acct, entry) in [(rev_debit, "debit"), (rev_credit, "credit")] {
+        if acct == cash_id {
+            continue;
+        }
+        let bal = account_balance(&mut tx, acct).await?;
+        recompute_available(&mut tx, acct).await?;
+        record_summary(&mut tx, acct, entry, amount, bal).await?;
+    }
+
+    // Cross-link the reversal to the original.
+    sqlx::query(
+        "INSERT INTO transaction_reversals \
+         (original_transaction_id, reversal_transaction_id, reason, authorized_by) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(txn_id)
+    .bind(rev_txn)
+    .bind(&reason)
+    .bind(auth.customer_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Reverse the GL by original type (a transfer posted none, so nothing to undo).
+    let gl = match otype.as_str() {
+        "deposit" => Some(
+            post_gl_entry(
+                &state,
+                &reference,
+                &reason,
+                GlAccount::Payable,
+                GlAccount::Bank,
+                amount,
+            )
+            .await?,
+        ),
+        "withdrawal" => Some(
+            post_gl_entry(
+                &state,
+                &reference,
+                &reason,
+                GlAccount::Bank,
+                GlAccount::Payable,
+                amount,
+            )
+            .await?,
+        ),
+        _ => None,
+    };
+    if let Some(gl) = gl {
+        tag_gl_entry(&mut tx, rev_txn, &format!("{}:{}", gl.backend, gl.id)).await?;
+    }
+
+    tx.commit().await?;
+
+    tracing::info!(original = %txn_id, reversal = %rev_txn, amount = %amount, "↩️  transaction reversed");
+    let resp = load_transaction_response(&state.pool, rev_txn).await?;
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
