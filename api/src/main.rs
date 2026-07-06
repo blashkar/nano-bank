@@ -3,6 +3,7 @@ mod config;
 mod errors;
 mod handlers;
 mod ledger;
+mod lynx;
 mod middleware;
 mod models;
 mod rails;
