@@ -305,12 +305,22 @@ async fn transfer_money(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
+    // Reject malformed requests BEFORE the replay check, so a bad request with
+    // a previously-used key is a 400, not a misleading 200 replay.
+    if req.from_account_id == req.to_account_id {
+        return Err(AppError::BadRequest(
+            "from and to accounts must differ".to_string(),
+        ));
+    }
+
     // Idempotent replay: return the already-posted transfer for a known key.
     // Scoped to the caller so a key can't surface another customer's transfer.
     // (Best-effort — no unique index, so tightly-concurrent duplicates with the
     // same key could still both post; acceptable for this toy.)
     if let Some(key) = req.idempotency_key.as_deref() {
-        if let Some(existing) = find_by_idempotency_key(&state.pool, key, auth.customer_id).await? {
+        if let Some(existing) =
+            find_by_idempotency_key(&state.pool, key, auth.customer_id, None).await?
+        {
             let resp = load_transaction_response(&state.pool, existing).await?;
             return Ok((StatusCode::OK, Json(resp)));
         }
@@ -1149,18 +1159,27 @@ async fn record_summary(
     Ok(())
 }
 
+/// Find a prior transfer for an idempotency key. Keys live in per-actor
+/// namespaces: customer replays match the customer's own transfers with **no**
+/// mandate tag, agent replays (`mandate_id = Some`) match only transfers made
+/// under that same mandate — so a key can never surface another plane's (or
+/// another account's) transaction through the agent surface.
 pub(crate) async fn find_by_idempotency_key(
     pool: &DatabasePool,
     key: &str,
     customer_id: Uuid,
+    mandate_id: Option<Uuid>,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT transaction_id FROM transactions \
          WHERE transaction_type = 'transfer' AND initiated_by = $2 \
-         AND metadata->>'idempotency_key' = $1 LIMIT 1",
+         AND metadata->>'idempotency_key' = $1 \
+         AND metadata->>'mandate_id' IS NOT DISTINCT FROM $3 \
+         LIMIT 1",
     )
     .bind(key)
     .bind(customer_id)
+    .bind(mandate_id.map(|m| m.to_string()))
     .fetch_optional(pool)
     .await
 }

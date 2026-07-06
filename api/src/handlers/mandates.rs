@@ -36,8 +36,12 @@ pub fn mandate_routes() -> Router<AppState> {
         .route("/:id/actions", get(list_mandate_actions))
 }
 
+// daily_used is reset lazily (on the next reservation), so present the
+// *effective* value: a row from a previous day reads as 0 spent today.
 const MANDATE_COLUMNS: &str = "mandate_id, agent_id, account_id, scopes, max_per_tx, \
-     daily_cap, allowed_payees, daily_used, status, expires_at, created_at, revoked_at";
+     daily_cap, allowed_payees, \
+     CASE WHEN last_reset_date < CURRENT_DATE THEN 0 ELSE daily_used END AS daily_used, \
+     status, expires_at, created_at, revoked_at";
 
 /// Record a consent event (grant/revoke) in the general audit log under the
 /// acting user's identity.

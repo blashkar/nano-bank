@@ -41,9 +41,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// A fresh opaque refresh token (~244 bits from two v4 UUIDs). The plaintext is
+/// A fresh opaque secret (~244 bits from two v4 UUIDs), used for refresh
+/// tokens here and agent secrets in `handlers/agents.rs`. The plaintext is
 /// returned to the client once; only its SHA-256 hash is stored (see callers).
-fn generate_refresh_token() -> String {
+pub(crate) fn generate_opaque_secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
@@ -134,25 +135,24 @@ async fn issue_agent_token(
 ) -> Result<(StatusCode, Json<AccessTokenResponse>), AppError> {
     payload.validate()?;
 
-    // Authenticate the agent: SHA-256 the presented secret (pgcrypto, the same
-    // digest used at registration) and compare in constant time.
-    let agent: Option<(String, String)> =
-        sqlx::query_as("SELECT secret_hash, status FROM agents WHERE agent_id = $1")
-            .bind(payload.agent_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(AppError::Database)?;
-    let presented_hash: String = sqlx::query_scalar("SELECT encode(digest($1, 'sha256'), 'hex')")
-        .bind(&payload.agent_secret)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
-
-    let invalid = || AppError::Authentication("Invalid agent credentials".to_string());
-    let (secret_hash, agent_status) = agent.ok_or_else(invalid)?;
-    if !constant_time_eq(secret_hash.as_bytes(), presented_hash.as_bytes()) {
-        return Err(invalid());
-    }
+    // Authenticate the agent: match the SHA-256 of the presented secret in
+    // SQL (the same pgcrypto digest used at registration — one query, the
+    // `user_sessions` lookup pattern). Unknown id and wrong secret are
+    // indistinguishable: the same generic 401.
+    let agent_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM agents \
+         WHERE agent_id = $1 AND secret_hash = encode(digest($2, 'sha256'), 'hex')",
+    )
+    .bind(payload.agent_id)
+    .bind(&payload.agent_secret)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let Some(agent_status) = agent_status else {
+        return Err(AppError::Authentication(
+            "Invalid agent credentials".to_string(),
+        ));
+    };
 
     // Resolve the named mandate; it must be this agent's. A mandate that isn't
     // (or doesn't exist) gets the same answer, so agents can't probe ids.
@@ -294,7 +294,7 @@ async fn login(
         .execute(&state.pool)
         .await;
 
-    let refresh_token = generate_refresh_token();
+    let refresh_token = generate_opaque_secret();
     let session_id: Uuid = sqlx::query_scalar(
         "INSERT INTO user_sessions (customer_id, session_token, ip_address, user_agent, expires_at)
          VALUES ($1, encode(digest($2, 'sha256'), 'hex'), $3::inet, $4,
@@ -368,7 +368,7 @@ async fn refresh_token(
         return Err(AppError::SessionExpired);
     }
 
-    let new_refresh = generate_refresh_token();
+    let new_refresh = generate_opaque_secret();
     sqlx::query(
         "UPDATE user_sessions
          SET session_token = encode(digest($1, 'sha256'), 'hex'),

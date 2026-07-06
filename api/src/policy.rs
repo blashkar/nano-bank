@@ -36,6 +36,13 @@ pub fn decision_for(reason: &str) -> &'static str {
     }
 }
 
+/// The one audit INSERT, shared by [`record_action`] and [`record_action_tx`]
+/// so the two executors can never drift on columns or bind order.
+const ACTION_INSERT_SQL: &str = "INSERT INTO agent_actions \
+     (mandate_id, agent_id, customer_id, account_id, operation, amount, \
+      decision, reason, transaction_id) \
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)";
+
 /// Append one decision to the `agent_actions` audit. Part of the request path
 /// by design: if the audit can't be written, the action doesn't happen.
 #[allow(clippy::too_many_arguments)]
@@ -51,23 +58,18 @@ pub async fn record_action(
     reason: Option<&str>,
     transaction_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO agent_actions \
-         (mandate_id, agent_id, customer_id, account_id, operation, amount, \
-          decision, reason, transaction_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(mandate_id)
-    .bind(agent_id)
-    .bind(customer_id)
-    .bind(account_id)
-    .bind(operation)
-    .bind(amount)
-    .bind(decision)
-    .bind(reason)
-    .bind(transaction_id)
-    .execute(pool)
-    .await?;
+    sqlx::query(ACTION_INSERT_SQL)
+        .bind(mandate_id)
+        .bind(agent_id)
+        .bind(customer_id)
+        .bind(account_id)
+        .bind(operation)
+        .bind(amount)
+        .bind(decision)
+        .bind(reason)
+        .bind(transaction_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -117,23 +119,18 @@ pub async fn record_action_tx(
     reason: Option<&str>,
     transaction_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO agent_actions \
-         (mandate_id, agent_id, customer_id, account_id, operation, amount, \
-          decision, reason, transaction_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(mandate_id)
-    .bind(agent_id)
-    .bind(customer_id)
-    .bind(account_id)
-    .bind(operation)
-    .bind(amount)
-    .bind(decision)
-    .bind(reason)
-    .bind(transaction_id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query(ACTION_INSERT_SQL)
+        .bind(mandate_id)
+        .bind(agent_id)
+        .bind(customer_id)
+        .bind(account_id)
+        .bind(operation)
+        .bind(amount)
+        .bind(decision)
+        .bind(reason)
+        .bind(transaction_id)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 

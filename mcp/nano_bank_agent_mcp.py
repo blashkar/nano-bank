@@ -165,8 +165,9 @@ def transfer(
 
     idempotency_key: REQUIRED. Invent a fresh unique string for each new
     payment, and REUSE the exact same key if you retry the same payment after
-    an error/timeout — a replayed key returns the original transfer instead of
-    paying twice. Never reuse a key for a different payment.
+    an error/timeout — a sequentially replayed key returns the original
+    transfer instead of paying twice (do NOT fire the same payment in
+    parallel). Never reuse a key for a different payment.
     """
     return _agent_call(
         "POST",

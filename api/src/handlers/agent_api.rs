@@ -113,14 +113,30 @@ async fn post_mandated_transfer(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
+    // Reject a self-transfer BEFORE the replay check, so a malformed request
+    // with a previously-used key is a 400, not a misleading 200 replay.
+    if req.to_account_id == agent.account_id {
+        return Err(AppError::BadRequest(
+            "destination must differ from the mandated account".to_string(),
+        ));
+    }
+
     // No scope pre-check here: `authorize_and_reserve_transfer` checks scope
     // under the mandate lock, and the deny path below audits it — one audit
     // row per attempt, all under operation "transfer".
 
-    // Idempotent replay: same key (scoped to the acted-for customer) returns
-    // the already-posted transfer — no new movement, no new cap reservation.
-    if let Some(existing) =
-        find_by_idempotency_key(&state.pool, &req.idempotency_key, agent.customer_id).await?
+    // Idempotent replay: the key's namespace is THIS mandate (via the
+    // metadata tag), so it can never surface a transfer the customer or
+    // another mandate made — the agent plane stays pinned to its own history.
+    // Best-effort like the customer path: sequential replays return the
+    // original; a tightly-concurrent duplicate could still double-post.
+    if let Some(existing) = find_by_idempotency_key(
+        &state.pool,
+        &req.idempotency_key,
+        agent.customer_id,
+        Some(agent.mandate_id),
+    )
+    .await?
     {
         policy::record_action(
             &state.pool,
@@ -161,25 +177,36 @@ async fn post_mandated_transfer(
     match result {
         Ok(resp) => Ok((StatusCode::CREATED, Json(resp))),
         Err(err) => {
-            // A policy deny aborted the transfer's transaction, so the denial
-            // is recorded here, outside it (audit-of-denials guarantee).
-            if let AppError::PolicyDenied(reason) = &err {
-                let reason = reason.clone();
-                policy::record_action(
-                    &state.pool,
-                    agent.mandate_id,
-                    agent.agent_id,
-                    agent.customer_id,
-                    agent.account_id,
-                    "transfer",
-                    Some(amount),
-                    policy::decision_for(&reason),
-                    Some(&reason),
-                    None,
-                )
-                .await
-                .map_err(AppError::Database)?;
-            }
+            // The failed attempt's transaction rolled back, so the audit row
+            // is written here, outside it. EVERY failure is recorded — policy
+            // denials with their reason code, and post-policy execution
+            // failures (insufficient funds, inoperable account, a revocation
+            // racing the reservation) with the error's code — so the owner's
+            // activity view never has blind spots.
+            let reason = match &err {
+                AppError::PolicyDenied(reason) => reason.clone(),
+                AppError::MandateInactive => "MANDATE_INACTIVE".to_string(),
+                AppError::InsufficientFunds => "INSUFFICIENT_FUNDS".to_string(),
+                AppError::InvalidAccountStatus => "INVALID_ACCOUNT_STATUS".to_string(),
+                AppError::BadRequest(_) => "BAD_REQUEST".to_string(),
+                AppError::NotFound(_) => "NOT_FOUND".to_string(),
+                AppError::TransactionLimitExceeded => "ACCOUNT_LIMIT_EXCEEDED".to_string(),
+                _ => "INTERNAL".to_string(),
+            };
+            policy::record_action(
+                &state.pool,
+                agent.mandate_id,
+                agent.agent_id,
+                agent.customer_id,
+                agent.account_id,
+                "transfer",
+                Some(amount),
+                policy::decision_for(&reason),
+                Some(&reason),
+                None,
+            )
+            .await
+            .map_err(AppError::Database)?;
             Err(err)
         }
     }

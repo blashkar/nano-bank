@@ -724,6 +724,30 @@ async fn agent_transfer_happy_path_and_replay() {
     assert_eq!(balance(&c, &token, a).await, 848.5);
     assert_eq!(mandate_daily_used(&c, &token, mandate).await, 150.0);
 
+    // Key namespaces are per-mandate: a key the CUSTOMER used must NOT replay
+    // through the agent plane — the agent's identical key posts a NEW transfer.
+    let shared_key = format!("shared-{}", Uuid::new_v4());
+    let resp = c
+        .post(format!("{}/api/v1/transactions/transfer", base_url()))
+        .bearer_auth(&token)
+        .json(&json!({
+            "from_account_id": a, "to_account_id": b, "amount": 20.0,
+            "description": "customer transfer", "idempotency_key": shared_key
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 201, "customer transfer");
+    let resp = agent_transfer(&c, &atoken, b, 20.0, &shared_key).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "agent key must not replay the customer's transfer"
+    );
+    let v: Value = resp.json().await.unwrap();
+    assert_ne!(v["transaction_id"].as_str().unwrap(), txn_id);
+    assert_eq!(mandate_daily_used(&c, &token, mandate).await, 170.0);
+
     // Agency is on the money trail (metadata isn't exposed over HTTP).
     let Some(db) = test_db().await else { return };
     let (meta_agent, meta_mandate): (Option<String>, Option<String>) = sqlx::query_as(
@@ -881,9 +905,33 @@ async fn transfer_guards() {
         resp.status()
     );
 
-    // Revoked transfer mandate → the token dies (401), not a policy 403.
+    // A transfer mandate on the (unfunded) account for the next checks.
     let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
     let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    // A self-transfer (to == the mandated account) is a 400, even with a key.
+    let resp = agent_transfer(&c, &atoken, a, 10.0, &Uuid::new_v4().to_string()).await;
+    assert_eq!(resp.status().as_u16(), 400, "self transfer");
+
+    // A within-caps transfer that fails on FUNDS is still audited (the owner's
+    // activity view has no blind spots), and its cap reservation rolled back.
+    let resp = agent_transfer(&c, &atoken, b, 50.0, &Uuid::new_v4().to_string()).await;
+    assert_eq!(resp.status().as_u16(), 400, "insufficient funds");
+    assert_eq!(mandate_daily_used(&c, &token, mandate).await, 0.0);
+    if let Some(db) = test_db().await {
+        let audited: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_actions WHERE mandate_id = $1 \
+             AND operation = 'transfer' AND decision = 'denied' \
+             AND reason = 'INSUFFICIENT_FUNDS')",
+        )
+        .bind(mandate)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(audited, "funds failure lands in the audit trail");
+    }
+
+    // Revoked mandate → the token dies (401), not a policy 403.
     let resp = c
         .delete(format!("{}/api/v1/mandates/{}", base_url(), mandate))
         .bearer_auth(&token)

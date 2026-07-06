@@ -102,7 +102,9 @@ pub struct AgentActionResponse {
 /// Agent-initiated transfer (`POST /api/v1/agent/transfers`). The funding
 /// account is always the mandate's account — there is no `from` field by
 /// design. `idempotency_key` is REQUIRED: agents retry on timeouts far more
-/// than humans, and a replayed key must not double-spend.
+/// than humans. Keys are namespaced to the mandate; a *sequential* replay
+/// returns the original transfer (best-effort like the customer path — no
+/// unique index, so tightly-concurrent duplicates could still both post).
 #[derive(Debug, Deserialize, Validate)]
 pub struct AgentTransferRequest {
     pub to_account_id: Uuid,

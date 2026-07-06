@@ -17,6 +17,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::errors::AppError;
+use crate::handlers::auth::generate_opaque_secret;
 use crate::handlers::AppState;
 use crate::models::agent::{AgentPublic, RegisterAgentRequest, RegisterAgentResponse};
 
@@ -24,12 +25,6 @@ pub fn agent_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(register_agent))
         .route("/:id", get(get_agent))
-}
-
-/// A fresh opaque agent secret (~244 bits from two v4 UUIDs), mirroring
-/// `auth::generate_refresh_token`.
-fn generate_agent_secret() -> String {
-    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
 /// Register an agent. Public by design (a registered agent can do nothing
@@ -40,7 +35,7 @@ async fn register_agent(
 ) -> Result<(StatusCode, Json<RegisterAgentResponse>), AppError> {
     req.validate()?;
 
-    let secret = generate_agent_secret();
+    let secret = generate_opaque_secret();
     let (agent_id, kind, status): (Uuid, String, String) = sqlx::query_as(
         "INSERT INTO agents (display_name, description, secret_hash) \
          VALUES ($1, $2, encode(digest($3, 'sha256'), 'hex')) \
