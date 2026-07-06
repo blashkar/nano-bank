@@ -895,3 +895,73 @@ async fn transfer_guards() {
     assert_eq!(resp.status().as_u16(), 401, "revoked mandate");
     assert_eq!(error_code(resp).await, "MANDATE_INACTIVE");
 }
+
+// ---------------------------------------------------------------------------
+// The owner's view of the audit trail (GET /mandates/{id}/actions)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mandate_activity_is_visible_to_its_owner() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let account = create_account(&c, &token, "chequing").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_mandate(&c, &token, agent_id, account, &["read:balance"]).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    // One allowed read, one denied (out-of-scope) read.
+    assert_eq!(
+        agent_get(&c, &atoken, "/api/v1/agent/account")
+            .await
+            .status()
+            .as_u16(),
+        200
+    );
+    assert_eq!(
+        agent_get(&c, &atoken, "/api/v1/agent/transactions")
+            .await
+            .status()
+            .as_u16(),
+        403
+    );
+
+    // The owner sees BOTH decisions over HTTP (newest first).
+    let resp = c
+        .get(format!("{}/api/v1/mandates/{}/actions", base_url(), mandate))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let actions: Value = resp.json().await.unwrap();
+    let actions = actions.as_array().unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["operation"] == "token:issue" && a["decision"] == "allowed"),
+        "token issuance visible: {actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["operation"] == "read:balance" && a["decision"] == "allowed"),
+        "allowed read visible: {actions:?}"
+    );
+    assert!(
+        actions.iter().any(|a| a["operation"] == "read:transactions"
+            && a["decision"] == "denied"
+            && a["reason"] == "SCOPE_MISSING"),
+        "denied read visible with reason: {actions:?}"
+    );
+
+    // Another customer gets 404 — the mandate's existence isn't leaked.
+    let (_other, other_token) = session(&c).await;
+    let resp = c
+        .get(format!("{}/api/v1/mandates/{}/actions", base_url(), mandate))
+        .bearer_auth(&other_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 404, "cross-customer activity");
+}

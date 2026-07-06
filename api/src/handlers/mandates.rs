@@ -13,7 +13,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::Json,
-    routing::{delete, post},
+    routing::{delete, get, post},
     Router,
 };
 use chrono::Utc;
@@ -25,13 +25,15 @@ use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::agent::{
-    CreateMandateRequest, MandateResponse, KNOWN_SCOPES, SCOPE_TRANSFER_INITIATE,
+    AgentActionResponse, CreateMandateRequest, MandateResponse, KNOWN_SCOPES,
+    SCOPE_TRANSFER_INITIATE,
 };
 
 pub fn mandate_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(create_mandate).get(list_mandates))
         .route("/:id", delete(revoke_mandate))
+        .route("/:id/actions", get(list_mandate_actions))
 }
 
 const MANDATE_COLUMNS: &str = "mandate_id, agent_id, account_id, scopes, max_per_tx, \
@@ -220,4 +222,35 @@ async fn revoke_mandate(
 
     tracing::info!(mandate_id = %mandate_id, "🚫 mandate revoked");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// What the agent did under this mandate — every policy decision, including
+/// denials (newest first). Owner-only; 404 for anyone else (no existence leak).
+async fn list_mandate_actions(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Path(mandate_id): Path<Uuid>,
+) -> Result<Json<Vec<AgentActionResponse>>, AppError> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM mandates WHERE mandate_id = $1 AND customer_id = $2)",
+    )
+    .bind(mandate_id)
+    .bind(auth.customer_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    if !owned {
+        return Err(AppError::NotFound("mandate not found".to_string()));
+    }
+
+    let actions = sqlx::query_as::<_, AgentActionResponse>(
+        "SELECT action_id, operation, amount, decision, reason, transaction_id, created_at \
+         FROM agent_actions WHERE mandate_id = $1 ORDER BY created_at DESC LIMIT 200",
+    )
+    .bind(mandate_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(Json(actions))
 }

@@ -86,6 +86,19 @@ pub struct MandateResponse {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// One row of a mandate's audit trail, as shown to its granting customer
+/// (`GET /api/v1/mandates/{id}/actions`). Denials are included by design.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AgentActionResponse {
+    pub action_id: Uuid,
+    pub operation: String,
+    pub amount: Option<Decimal>,
+    pub decision: String,
+    pub reason: Option<String>,
+    pub transaction_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Agent-initiated transfer (`POST /api/v1/agent/transfers`). The funding
 /// account is always the mandate's account — there is no `from` field by
 /// design. `idempotency_key` is REQUIRED: agents retry on timeouts far more
