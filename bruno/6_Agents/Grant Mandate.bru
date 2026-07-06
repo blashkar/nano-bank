@@ -14,7 +14,10 @@ body:json {
   {
     "agent_id": "{{agentId}}",
     "account_id": "{{chequingId}}",
-    "scopes": ["read:balance", "read:transactions"],
+    "scopes": ["read:balance", "read:transactions", "transfer:initiate"],
+    "max_per_tx": 200.00,
+    "daily_cap": 500.00,
+    "allowed_payees": ["{{savingsId}}"],
     "expires_at": "2027-01-01T00:00:00Z"
   }
 }
@@ -25,9 +28,9 @@ script:post-response {
 
 docs {
   THE CONSENT ACT — authenticated as the account owner (run 2_Customers
-  Create + Login and 5_Transactions Open Chequing first). Scopes may also
-  include transfer:initiate, which then requires max_per_tx and daily_cap
-  (enforced by Phase 2). A non-owned account returns 404.
+  Create + Login and 5_Transactions Open Chequing + Open Savings first).
+  transfer:initiate requires max_per_tx + daily_cap; allowed_payees
+  optionally pins destinations. A non-owned account returns 404.
 }
 
 settings {

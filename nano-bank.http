@@ -367,8 +367,9 @@ Accept: application/json
 ###
 
 # Grant a mandate — THE CONSENT ACT (customer token; account must be yours).
-# Scopes: read:balance, read:transactions, transfer:initiate (the last one
-# requires max_per_tx + daily_cap and is enforced in Phase 2).
+# transfer:initiate requires max_per_tx + daily_cap; allowed_payees optionally
+# pins destinations (NULL = any). Caps are enforced + reserved under the
+# mandate row lock on every agent transfer.
 # @name mandate
 POST {{baseUrl}}/api/v1/mandates
 Content-Type: application/json
@@ -377,7 +378,10 @@ Authorization: Bearer {{txnToken}}
 {
     "agent_id": "{{agentId}}",
     "account_id": "{{acctA.response.body.account_id}}",
-    "scopes": ["read:balance", "read:transactions"],
+    "scopes": ["read:balance", "read:transactions", "transfer:initiate"],
+    "max_per_tx": 200.00,
+    "daily_cap": 500.00,
+    "allowed_payees": ["{{acctB.response.body.account_id}}"],
     "expires_at": "2027-01-01T00:00:00Z"
 }
 
@@ -418,6 +422,23 @@ Authorization: Bearer {{agentAccess}}
 GET {{baseUrl}}/api/v1/agent/transactions?limit=10
 Accept: application/json
 Authorization: Bearer {{agentAccess}}
+
+###
+
+# Agent transfer OUT of the mandated account (Phase 2). idempotency_key is
+# REQUIRED — replaying the same key returns the original transfer (200), no
+# double spend. Try amount 250.00 → 403 POLICY_DENIED MAX_PER_TX_EXCEEDED;
+# a to_account_id not on allowed_payees → PAYEE_NOT_ALLOWED.
+POST {{baseUrl}}/api/v1/agent/transfers
+Content-Type: application/json
+Authorization: Bearer {{agentAccess}}
+
+{
+    "to_account_id": "{{acctB.response.body.account_id}}",
+    "amount": 150.00,
+    "description": "agent-initiated payment",
+    "idempotency_key": "http-demo-agent-pay-001"
+}
 
 ###
 

@@ -123,7 +123,8 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/mandates</code><br>
         Grant a mandate — the consent act (customer token; scopes: <code>read:balance</code>,
-        <code>read:transactions</code>, <code>transfer:initiate</code>)
+        <code>read:transactions</code>, <code>transfer:initiate</code> — the latter requires
+        <code>max_per_tx</code> + <code>daily_cap</code>, optionally <code>allowed_payees</code>)
     </div>
     <div class="endpoint">
         <span class="method get">GET</span> <code>/api/v1/mandates</code><br>
@@ -140,6 +141,11 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <div class="endpoint">
         <span class="method get">GET</span> <code>/api/v1/agent/transactions</code><br>
         History of the mandated account (agent token)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/agent/transfers</code><br>
+        Agent-initiated transfer out of the mandated account — <code>max_per_tx</code>/<code>daily_cap</code>/<code>allowed_payees</code>
+        enforced and reserved under the mandate row lock; <code>idempotency_key</code> required
     </div>
 
     <h2>🔒 Security</h2>
