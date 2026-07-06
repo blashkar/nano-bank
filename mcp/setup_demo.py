@@ -8,8 +8,11 @@ Creates (against a running nano-bank stack):
   1. a demo customer + login (the "account owner"),
   2. a chequing account, funded with a $750 deposit and a $50 withdrawal so
      history is interesting (skipped with a warning if the GL core is down),
+     plus a savings account as the approved payee,
   3. a registered agent named "Claude" (secret captured — shown once!),
-  4. a mandate: read:balance + read:transactions, 7-day expiry.
+  4. a mandate: read:balance + read:transactions + transfer:initiate with
+     max_per_tx $200, daily_cap $500, payees pinned to the savings account,
+     7-day expiry.
 
 Writes mcp/.env.demo (gitignored — contains live secrets) and prints the
 `claude mcp add` command, demo prompts, and the ready-made revoke curl.
@@ -66,10 +69,13 @@ def main() -> None:
     auth = {"Authorization": f"Bearer {token}"}
     print(f"✓ customer {email}")
 
-    # 2. Funded chequing account
+    # 2. Funded chequing account + a savings account as the approved payee
     r = c.post("/api/v1/accounts", headers=auth, json={"account_type": "chequing"})
     r.status_code in (200, 201) or die(f"create account: {r.status_code} {r.text}")
     account_id = r.json()["account_id"]
+    r = c.post("/api/v1/accounts", headers=auth, json={"account_type": "savings"})
+    r.status_code in (200, 201) or die(f"create payee account: {r.status_code} {r.text}")
+    payee_id = r.json()["account_id"]
     funded = True
     for path, body in [
         ("deposit", {"account_id": account_id, "amount": 750.00, "description": "Payday deposit"}),
@@ -96,7 +102,7 @@ def main() -> None:
     agent_id, agent_secret = agent["agent_id"], agent["agent_secret"]
     print(f"✓ agent 'Claude' registered: {agent_id}")
 
-    # 4. The consent act: grant the mandate
+    # 4. The consent act: grant the mandate (reads + bounded transfers)
     expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=7)).isoformat()
     r = c.post(
         "/api/v1/mandates",
@@ -104,13 +110,19 @@ def main() -> None:
         json={
             "agent_id": agent_id,
             "account_id": account_id,
-            "scopes": ["read:balance", "read:transactions"],
+            "scopes": ["read:balance", "read:transactions", "transfer:initiate"],
+            "max_per_tx": 200.00,
+            "daily_cap": 500.00,
+            "allowed_payees": [payee_id],
             "expires_at": expires,
         },
     )
     r.status_code == 201 or die(f"grant mandate: {r.status_code} {r.text}")
     mandate_id = r.json()["mandate_id"]
-    print(f"✓ mandate granted: {mandate_id} (read:balance, read:transactions, 7 days)")
+    print(
+        f"✓ mandate granted: {mandate_id} (reads + transfers ≤ $200/tx, $500/day, "
+        "payee = the savings account, 7 days)"
+    )
 
     # 5. Persist demo state (contains live secrets — gitignored)
     env_file = HERE / ".env.demo"
@@ -125,6 +137,7 @@ NANO_BANK_MANDATE_ID={mandate_id}
 DEMO_CUSTOMER_EMAIL={email}
 DEMO_CUSTOMER_TOKEN={token}
 DEMO_ACCOUNT_ID={account_id}
+DEMO_PAYEE_ACCOUNT_ID={payee_id}
 """
     )
     print(f"✓ wrote {env_file}")
@@ -156,6 +169,10 @@ NEXT STEPS
    • "Who are you to my bank? Use the nano-bank tools to introduce yourself."
    • "What's my account balance?"
    • "Summarize my recent transactions."
+   • "Move $150 into my savings account ({payee_id})."
+   • "Now move $250 more." → POLICY_DENIED (over the $200 per-transaction cap)
+   • Keep going until the $500 daily cap runs out.
+   • "Send $50 to account <any other uuid>." → PAYEE_NOT_ALLOWED
 
 3. THE REVOKE MOMENT — as the account owner, pull consent (customer token,
    not the agent's):

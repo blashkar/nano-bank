@@ -34,11 +34,25 @@ claude mcp add nano-bank-agent \
 #    • "Who are you to my bank? Introduce yourself using the nano-bank tools."
 #    • "What's my account balance?"
 #    • "Summarize my recent transactions."
+#    • "Move $150 into my savings account (<payee id from the seed output>)."
+#    • "Now move $250 more."        → denied: over the $200 per-transaction cap
+#    • "Send $50 to <another uuid>" → denied: payee not on the allowlist
 ```
 
-Tools exposed: `whoami`, `get_account_balance`, `get_recent_transactions`. Note what's
-*absent*: there is no account parameter anywhere (the mandate pins the account) and no
-transfer tool (Phase 2 — and the demo mandate wouldn't allow it anyway).
+Tools exposed: `whoami`, `get_account_balance`, `get_recent_transactions`, `transfer`.
+Note what's *absent*: there is no *from*-account parameter anywhere — the mandate pins the
+funding account.
+
+### The payment demo (Phase 2)
+
+The seeded mandate allows transfers **only** to the demo savings account, at most **$200 per
+transaction** and **$500 per day** — enforced (and the spend *reserved*) under a row lock in
+the bank, not in the agent. `transfer` requires an idempotency key, so a retried payment can
+never double-spend: the tool's docstring instructs the model to reuse the key on retry.
+Breaches come back as structured `POLICY_DENIED` results (`MAX_PER_TX_EXCEEDED`,
+`DAILY_CAP_EXCEEDED`, `PAYEE_NOT_ALLOWED`) that Claude reads and explains; the two cap
+overruns are audited as `step_up_required` — the exact rows Phase 3's human-approval flow
+will consume.
 
 ## The revoke moment
 

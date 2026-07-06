@@ -76,23 +76,31 @@ def _mint_token(client: httpx.Client) -> dict[str, Any] | None:
     return None
 
 
-def _agent_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """GET an agent-plane endpoint with a fresh-enough token.
+def _agent_call(
+    method: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call an agent-plane endpoint with a fresh-enough token.
 
     Retries exactly once with a re-minted token on 401 (expired token); a 401
     that persists (revoked/expired mandate, disabled agent) is returned as-is.
+    Safe to retry POSTs here because the API is idempotency-keyed.
     """
     with httpx.Client(timeout=10.0) as client:
         if _token["value"] is None or time.time() > _token["exp"] - 30:
             if err := _mint_token(client):
                 return err
         for attempt in (1, 2):
-            resp = client.get(
+            resp = client.request(
+                method,
                 f"{BASE_URL}{path}",
                 params=params,
+                json=body,
                 headers={"Authorization": f"Bearer {_token['value']}"},
             )
-            if resp.status_code == 200:
+            if resp.status_code in (200, 201):
                 return resp.json()
             if resp.status_code == 401 and attempt == 1:
                 if err := _mint_token(client):
@@ -100,6 +108,10 @@ def _agent_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any
                 continue
             return _error_payload(resp)
     return {"error": {"code": "UNREACHABLE", "message": "unexpected fallthrough"}}
+
+
+def _agent_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _agent_call("GET", path, params=params)
 
 
 @mcp.tool()
@@ -134,6 +146,38 @@ def get_recent_transactions(limit: int = 10) -> dict[str, Any]:
     legs included). Requires the read:transactions scope."""
     limit = max(1, min(int(limit), 100))
     return _agent_get("/api/v1/agent/transactions", params={"limit": limit})
+
+
+@mcp.tool()
+def transfer(
+    to_account_id: str,
+    amount: float,
+    description: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Transfer money OUT of the mandated account to another nano-bank account.
+
+    Requires the transfer:initiate scope. The bank enforces the mandate's
+    limits atomically: max_per_tx, the daily cap, and (if set) the payee
+    allowlist — a breach returns POLICY_DENIED with the reason
+    (MAX_PER_TX_EXCEEDED / DAILY_CAP_EXCEEDED / PAYEE_NOT_ALLOWED); explain it
+    to the user rather than retrying. A flat $1.50 fee applies.
+
+    idempotency_key: REQUIRED. Invent a fresh unique string for each new
+    payment, and REUSE the exact same key if you retry the same payment after
+    an error/timeout — a replayed key returns the original transfer instead of
+    paying twice. Never reuse a key for a different payment.
+    """
+    return _agent_call(
+        "POST",
+        "/api/v1/agent/transfers",
+        body={
+            "to_account_id": to_account_id,
+            "amount": round(float(amount), 2),
+            "description": description,
+            "idempotency_key": idempotency_key,
+        },
+    )
 
 
 if __name__ == "__main__":
