@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::config::database::DatabasePool;
 use crate::errors::AppError;
-use crate::middleware::auth::AuthenticatedAgent;
 use crate::handlers::cards::Tx;
+use crate::middleware::auth::AuthenticatedAgent;
 use crate::models::agent::SCOPE_TRANSFER_INITIATE;
 
 /// Machine-readable denial reasons (surfaced in `POLICY_DENIED` responses and
