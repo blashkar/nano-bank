@@ -52,20 +52,14 @@ async fn resolve_interac(state: &AppState) -> Result<InteracRail, AppError> {
     Ok(InteracRail::new(accts))
 }
 
-/// Interac's default hold lifetime before auto-expiry (real Interac: 30 days).
-fn expiry_days() -> i64 {
-    std::env::var("NANO_BANK__INTERAC__EXPIRY_DAYS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(30)
+/// Interac's default hold lifetime before auto-expiry (from layered `Settings`).
+fn expiry_days(state: &AppState) -> i64 {
+    state.settings.interac.expiry_days
 }
 
-/// Max amount per e-Transfer (funds check aside). Default $3,000 like real Interac.
-fn max_amount() -> rust_decimal::Decimal {
-    std::env::var("NANO_BANK__INTERAC__MAX_ETRANSFER_AMOUNT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| rust_decimal::Decimal::new(3000, 0))
+/// Max amount per e-Transfer (funds check aside), from layered `Settings`.
+fn max_amount(state: &AppState) -> rust_decimal::Decimal {
+    state.settings.interac.max_etransfer_amount
 }
 
 // -- Handler stubs (replaced wholesale in Tasks 7-14) ------------------------
@@ -77,10 +71,10 @@ async fn send_etransfer(
 ) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
-    if amount > max_amount() {
+    if amount > max_amount(&state) {
         return Err(AppError::BadRequest(format!(
             "amount exceeds per-transfer max {}",
-            max_amount()
+            max_amount(&state)
         )));
     }
     let recipient_handle = normalize_handle(req.recipient_handle_type, &req.recipient_handle_value);
@@ -173,7 +167,7 @@ async fn send_etransfer(
     .bind(&req.memo)
     .bind(hold.transaction_id)
     .bind(&req.idempotency_key)
-    .bind(expiry_days().to_string())
+    .bind(expiry_days(&state).to_string())
     .fetch_one(&mut *tx)
     .await
     .map_err(idempotency_conflict)?;
@@ -714,7 +708,8 @@ async fn network_inbound(
         let posting = rail.accept_inbound(&state, &mut tx, deposit_acct, amount,
             &format!("Interac e-Transfer from {}", req.sender_name)).await?;
         let id = insert_inbound(&mut tx, amount, &req, &handle, reg.0, &claim_token,
-            None, Some(deposit_acct), Some(posting.transaction_id), "deposited").await?;
+            None, Some(deposit_acct), Some(posting.transaction_id), "deposited",
+            expiry_days(&state)).await?;
         recompute_available(&mut tx, deposit_acct).await?;
         notify(&mut tx, id, &handle, "deposit_completed", &format!("${amount} auto-deposited"), None).await?;
         tx.commit().await?;
@@ -725,7 +720,8 @@ async fn network_inbound(
     let hold = rail.hold(&state, &mut tx, rail.accounts.settlement_id, amount,
         &format!("Interac inbound e-Transfer from {}", req.sender_name)).await?;
     let id = insert_inbound(&mut tx, amount, &req, &handle, reg.0, &claim_token,
-        answer_hash, None, Some(hold.transaction_id), "available").await?;
+        answer_hash, None, Some(hold.transaction_id), "available",
+        expiry_days(&state)).await?;
     notify(&mut tx, id, &handle, "incoming_transfer",
         &format!("You have an Interac e-Transfer of ${amount} from {}", req.sender_name), Some(&claim_token)).await?;
     tx.commit().await?;
@@ -737,7 +733,7 @@ async fn insert_inbound(
     tx: &mut crate::rails::PgTx<'_>, amount: Decimal, req: &InboundEtransferRequest,
     handle: &str, recipient_customer: Uuid, claim_token: &str,
     answer_hash: Option<String>, recipient_account: Option<Uuid>,
-    hold_txn: Option<Uuid>, status: &str,
+    hold_txn: Option<Uuid>, status: &str, expiry_days: i64,
 ) -> Result<Uuid, AppError> {
     let id: Uuid = sqlx::query_scalar(
         r#"
@@ -746,13 +742,14 @@ async fn insert_inbound(
              recipient_customer_id, recipient_account_id, counterparty_institution,
              security_question, security_answer_hash, claim_token, memo, hold_transaction_id, expires_at)
         VALUES ('inbound',$1::interac_status,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-                CURRENT_TIMESTAMP + interval '30 days')
+                CURRENT_TIMESTAMP + ($14 || ' days')::interval)
         RETURNING etransfer_id
         "#,
     )
     .bind(status).bind(amount).bind(&req.sender_name).bind(req.recipient_handle_type)
     .bind(handle).bind(recipient_customer).bind(recipient_account).bind(&req.counterparty_institution)
     .bind(&req.security_question).bind(&answer_hash).bind(claim_token).bind(&req.memo).bind(hold_txn)
+    .bind(expiry_days.to_string())
     .fetch_one(&mut **tx).await?;
     Ok(id)
 }
