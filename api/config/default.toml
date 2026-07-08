@@ -32,3 +32,9 @@ service_client_secret = "nano-bank-visa-network-secret-change-me"
 [logging]
 level = "info"
 format = "json"
+
+[interac]
+# Hold lifetime before an e-Transfer auto-expires (real Interac: 30 days).
+expiry_days = 30
+# Max amount per e-Transfer (string so it deserialises to Decimal exactly).
+max_etransfer_amount = "3000"

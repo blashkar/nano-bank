@@ -184,6 +184,65 @@ def render_transactions() -> None:
                  })
 
 
+def render_interac() -> None:
+    """Interac e-Transfer rail: in-flight/recent transfers, the clearing and
+    settlement GL balances, and the notification outbox (no real email/SMS —
+    just an outbox table the simulator and this viewer read)."""
+    total = int(query("SELECT count(*) AS n FROM interac_etransfers")["n"][0])
+    in_flight = int(query(
+        "SELECT count(*) AS n FROM interac_etransfers "
+        "WHERE status IN ('initiated', 'held', 'available')")["n"][0])
+    last_hour = int(query(
+        "SELECT count(*) AS n FROM interac_etransfers "
+        "WHERE created_at >= now() - interval '1 hour'")["n"][0])
+    by_status = query(
+        "SELECT status::text AS status, count(*) AS n "
+        "FROM interac_etransfers GROUP BY status ORDER BY n DESC")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total e-Transfers", f"{total:,}")
+    c2.metric("In-flight", f"{in_flight:,}")
+    c3.metric("Created (last hour)", f"{last_hour:,}")
+
+    if not by_status.empty:
+        st.caption("e-Transfers by status")
+        st.bar_chart(by_status.set_index("status")["n"], height=180)
+
+    st.subheader("🧾 Recent e-Transfers")
+    feed = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, "
+        "       amount, recipient_handle_value "
+        "FROM interac_etransfers ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(feed, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount": st.column_config.NumberColumn("amount", format="$%.2f"),
+                 })
+
+    st.subheader("💰 Clearing & settlement balances")
+    balances = query(
+        "SELECT a.account_type::text AS account_type, a.balance, a.currency "
+        "FROM accounts a JOIN customers c USING (customer_id) "
+        "WHERE c.email = 'interac@nano.bank'")
+    clearing = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "chequing"), None)
+    settlement = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "savings"), None)
+    b1, b2 = st.columns(2)
+    b1.metric("INTERAC_CLEARING", f"${clearing:,.2f}" if clearing is not None else "—")
+    b2.metric("INTERAC_SETTLEMENT", f"${settlement:,.2f}" if settlement is not None else "—")
+
+    st.subheader("📬 Notification outbox")
+    notifications = query(
+        "SELECT created_at, kind::text AS kind, delivered, message "
+        "FROM interac_notifications ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(notifications, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "delivered": st.column_config.CheckboxColumn("delivered"),
+                 })
+
+
 def main() -> None:
     st.set_page_config(page_title="nano-bank viewer", page_icon="🏦", layout="wide")
     st.title("🏦 nano-bank · live activity")
@@ -191,8 +250,8 @@ def main() -> None:
                f"refresh every {REFRESH_SECONDS}s")
     st_autorefresh(interval=REFRESH_SECONDS * 1000, key="refresh")
 
-    tab_customers, tab_accounts, tab_tx = st.tabs(
-        ["👤 Customers", "💳 Accounts", "💸 Card transactions"])
+    tab_customers, tab_accounts, tab_tx, tab_interac = st.tabs(
+        ["👤 Customers", "💳 Accounts", "💸 Card transactions", "📨 Interac"])
     with tab_customers:
         try:
             render_customers()
@@ -211,6 +270,11 @@ def main() -> None:
     with tab_tx:
         try:
             render_transactions()
+        except Exception as e:
+            st.error(f"Database error: {e}")
+    with tab_interac:
+        try:
+            render_interac()
         except Exception as e:
             st.error(f"Database error: {e}")
 

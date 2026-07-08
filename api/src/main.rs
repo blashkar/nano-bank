@@ -4,6 +4,7 @@ mod handlers;
 mod ledger;
 mod middleware;
 mod models;
+mod rails;
 mod repositories;
 mod services;
 mod utils;
@@ -79,6 +80,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Bootstrap the Interac rail's clearing/settlement GL accounts (idempotent;
+    // also re-resolved per request, so a mid-run wipe self-heals).
+    if let Err(e) = rails::interac::ensure_interac_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap Interac GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
     // Create application router
     let app = create_router(pool, &settings).await;
 
@@ -143,6 +151,9 @@ async fn create_router(
 
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
+
+        // Interac e-Transfer rails
+        .nest("/api/v1/interac", handlers::interac::interac_routes())
 
         // Transaction routes
         .nest("/api/v1/transactions", handlers::transactions::transaction_routes())
