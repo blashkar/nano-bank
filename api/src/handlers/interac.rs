@@ -480,6 +480,17 @@ async fn claim_etransfer(
     // Recipient was just credited; refresh its available_balance too.
     recompute_available(&mut tx, req.deposit_account_id).await?;
     mark_deposited(&mut tx, id, req.deposit_account_id).await?;
+    // Record the claimant as the recipient so they keep the receipt (get/list
+    // visibility). Guarded to NULL so we only fill the external case and never
+    // overwrite an inbound-held/registered transfer that already has a recipient.
+    sqlx::query(
+        "UPDATE interac_etransfers SET recipient_customer_id=$2 \
+         WHERE etransfer_id=$1 AND recipient_customer_id IS NULL",
+    )
+    .bind(id)
+    .bind(caller.customer_id)
+    .execute(&mut *tx)
+    .await?;
     let handle: String =
         sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
             .bind(id)

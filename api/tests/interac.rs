@@ -284,12 +284,37 @@ async fn send_then_claim_with_correct_answer_deposits() {
     )
     .await;
     assert!(resp.status().is_success(), "claim: {}", resp.status());
-    // The claim response is the loaded transfer. (An external claimant is not
-    // recorded as recipient_customer_id, so B cannot GET it afterwards — a known
-    // v1 gap; assert on the claim response and the credited balance instead.)
     let claimed: Value = resp.json().await.unwrap();
     assert_eq!(claimed["status"], "deposited", "claim should deposit: {claimed}");
     assert_eq!(balance(&c, &b_token, b_acct).await, 75.0);
+
+    // Claiming records B as the recipient, so B retains the receipt: a GET by B
+    // now returns the transfer (before the fix this 404'd, because an external
+    // transfer's recipient_customer_id was left NULL).
+    let get = c
+        .get(format!("{}/api/v1/interac/etransfers/{}", base_url(), id))
+        .bearer_auth(&b_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status().as_u16(), 200, "claimant should see the transfer after claiming");
+    let seen: Value = get.json().await.unwrap();
+    assert_eq!(seen["status"], "deposited", "claimant's GET should show deposited: {seen}");
+
+    // ...and it appears in B's e-Transfer history.
+    let list: Value = c
+        .get(format!("{}/api/v1/interac/etransfers", base_url()))
+        .bearer_auth(&b_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        list.as_array().unwrap().iter().any(|e| e["etransfer_id"] == claimed["etransfer_id"]),
+        "claimed transfer should appear in B's list: {list}"
+    );
 }
 
 #[tokio::test]
