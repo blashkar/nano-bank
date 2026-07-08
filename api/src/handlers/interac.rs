@@ -408,7 +408,7 @@ async fn get_etransfer(
 async fn lock_available(
     tx: &mut crate::rails::PgTx<'_>,
     id: Uuid,
-) -> Result<(Decimal, Uuid, Option<Uuid>, Option<String>, i32, String), AppError> {
+) -> Result<(Decimal, Option<Uuid>, Option<Uuid>, Option<String>, i32, String), AppError> {
     let row = sqlx::query_as::<_, (String, Decimal, Option<Uuid>, Option<Uuid>, Option<String>, i32, String)>(
         "SELECT status::text, amount, sender_account_id, recipient_customer_id, \
          security_answer_hash, wrong_answer_attempts, \
@@ -420,7 +420,9 @@ async fn lock_available(
     if row.0 != "available" {
         return Err(AppError::Conflict(format!("e-Transfer is {}", row.0)));
     }
-    Ok((row.1, row.2.unwrap_or_default(), row.3, row.4, row.5, row.6))
+    // sender_account_id is None for inbound-held transfers (the hold sits on the
+    // rail's SETTLEMENT account); callers that credit it back map None accordingly.
+    Ok((row.1, row.2, row.3, row.4, row.5, row.6))
 }
 
 async fn claim_etransfer(
@@ -465,8 +467,10 @@ async fn claim_etransfer(
         }
     }
 
+    // `release` moves clearing→deposit and ignores `from_account`; supply the
+    // settlement account as a harmless placeholder for inbound-held claims (None).
     let hold = crate::rails::Hold {
-        from_account: sender_account,
+        from_account: sender_account.unwrap_or(rail.accounts.settlement_id),
         amount,
         reference: hold_ref,
         transaction_id: Uuid::nil(),
@@ -521,15 +525,10 @@ async fn decline_etransfer(
     }
 
     let (amount, sender_account, _r, _h, _a, hold_ref) = lock_available(&mut tx, id).await?;
-    // Inbound held transfers have no sender_account_id (NULL in the DB, so
-    // lock_available's unwrap_or_default() yields Uuid::nil()); those were
-    // held from the rail's SETTLEMENT account (network → clearing), so
-    // that's where the refund must be credited back (mirrors sweep_expired).
-    let sender_account = if sender_account.is_nil() {
-        rail.accounts.settlement_id
-    } else {
-        sender_account
-    };
+    // Inbound held transfers have no sender_account_id (None); those were held
+    // from the rail's SETTLEMENT account (network → clearing), so that's where
+    // the refund must be credited back (mirrors sweep_expired).
+    let sender_account = sender_account.unwrap_or(rail.accounts.settlement_id);
     let hold = crate::rails::Hold {
         from_account: sender_account,
         amount,
@@ -583,6 +582,9 @@ async fn cancel_etransfer(
         return Err(AppError::NotFound("e-Transfer not found".into())); // 404, not 403
     }
     let (amount, sender_account, _r, _h, _a, hold_ref) = lock_available(&mut tx, id).await?;
+    // Cancel is outbound-only, so sender_account is always Some; fall back to
+    // settlement defensively.
+    let sender_account = sender_account.unwrap_or(rail.accounts.settlement_id);
     let hold = crate::rails::Hold { from_account: sender_account, amount, reference: hold_ref, transaction_id: Uuid::nil() };
     rail.refund(&state, &mut tx, &hold, "Interac e-Transfer cancelled").await?;
     // Sender was just credited back (refund); refresh its available_balance too.
@@ -827,11 +829,10 @@ async fn sweep_expired(
             Ok(v) => v,
             Err(_) => { tx.rollback().await?; continue; }
         };
-        // Inbound held transfers have no sender_account_id (NULL in the DB, so
-        // lock_available's unwrap_or_default() yields Uuid::nil()); those were
+        // Inbound held transfers have no sender_account_id (None); those were
         // held from the rail's SETTLEMENT account (network → clearing), so
         // that's where the refund must be credited back.
-        let from_account = if from_account.is_nil() { rail.accounts.settlement_id } else { from_account };
+        let from_account = from_account.unwrap_or(rail.accounts.settlement_id);
         let hold = crate::rails::Hold { from_account, amount, reference: hold_ref, transaction_id: Uuid::nil() };
         rail.refund(&state, &mut tx, &hold, "Interac e-Transfer expired").await?;
         // Only recompute for a real CUSTOMER account; skip for the rail's own
