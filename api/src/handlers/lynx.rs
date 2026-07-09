@@ -26,6 +26,7 @@ use crate::models::lynx::{
     InboundRecallRequest, InitiateWireRequest, NetworkInboundRequest, RecallRequest,
     RecallResolveRequest, WireResponse,
 };
+use crate::rails::common::{recompute_available, zero_available};
 use crate::rails::lynx::{ensure_lynx_accounts, LynxRail};
 use crate::rails::{Destination, Hold, PgTx, Rail};
 
@@ -67,29 +68,8 @@ fn stale_minutes() -> i32 {
         .unwrap_or(60)
 }
 
-// --- available_balance helpers (customer accounts ONLY; never the system
-// clearing/settlement accounts) — same rule as Interac/AFT. ---
-
-async fn zero_available(tx: &mut PgTx<'_>, account_id: Uuid) -> Result<(), AppError> {
-    sqlx::query("UPDATE accounts SET available_balance = 0 WHERE account_id = $1")
-        .bind(account_id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-async fn recompute_available(tx: &mut PgTx<'_>, account_id: Uuid) -> Result<(), AppError> {
-    sqlx::query(
-        "UPDATE accounts SET available_balance = balance + overdraft_limit \
-         - COALESCE((SELECT sum(amount) FROM account_holds \
-                     WHERE account_id=$1 AND released_at IS NULL), 0), \
-         updated_at = CURRENT_TIMESTAMP WHERE account_id = $1",
-    )
-    .bind(account_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
+// available_balance helpers (customer accounts ONLY; never the system
+// clearing/settlement accounts) are shared across rails in `rails::common`.
 
 async fn caller_owns_account(
     state: &AppState,
