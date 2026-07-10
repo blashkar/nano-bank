@@ -44,6 +44,10 @@ pub struct InitiateWireRequest {
     pub counterparty_account: String,
     #[validate(length(max = 140))]
     pub remittance_info: Option<String>,
+    /// Optional client-supplied replay guard. A retry with the same key from the
+    /// same account returns the original wire instead of double-sending.
+    #[validate(length(min = 1, max = 255))]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

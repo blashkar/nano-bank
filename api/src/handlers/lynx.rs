@@ -52,20 +52,14 @@ async fn resolve_lynx(state: &AppState) -> Result<LynxRail, AppError> {
     Ok(LynxRail::new(ensure_lynx_accounts(&state.pool).await?))
 }
 
-/// Minimum wire amount (high-value floor). Configurable; default $10,000.
-fn min_amount() -> Decimal {
-    std::env::var("NANO_BANK__LYNX__MIN_AMOUNT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| Decimal::new(1000000, 2))
+/// Minimum wire amount (high-value floor). From layered Settings; default $10,000.
+fn min_amount(state: &AppState) -> Decimal {
+    state.settings.lynx.min_amount
 }
 
 /// How old (minutes) a `sent` wire must be before the admin sweep rejects it.
-fn stale_minutes() -> i32 {
-    std::env::var("NANO_BANK__LYNX__STALE_MINUTES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60)
+fn stale_minutes(state: &AppState) -> i32 {
+    state.settings.lynx.stale_minutes
 }
 
 // available_balance helpers (customer accounts ONLY; never the system
@@ -125,6 +119,37 @@ async fn load_wire(state: &AppState, wire_id: Uuid) -> Result<WireResponse, AppE
     })
 }
 
+/// Replay lookup for an idempotent send: the prior wire for this
+/// (originating account, key), if any.
+async fn load_wire_by_key(
+    state: &AppState,
+    account_id: Uuid,
+    key: &str,
+) -> Result<Option<WireResponse>, AppError> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT wire_id FROM lynx_wires WHERE local_account_id=$1 AND idempotency_key=$2",
+    )
+    .bind(account_id)
+    .bind(key)
+    .fetch_optional(&state.pool)
+    .await?;
+    match id {
+        Some(i) => Ok(Some(load_wire(state, i).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Map a wire INSERT unique violation on the idempotency key (a concurrent
+/// retry raced us) to a 409 rather than a 500.
+fn wire_conflict(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db) = &e {
+        if db.code().as_deref() == Some("23505") {
+            return AppError::Conflict("idempotency_key already used".into());
+        }
+    }
+    AppError::from(e)
+}
+
 /// Store an ISO 20022 message row; return its id.
 async fn store_message(
     tx: &mut PgTx<'_>,
@@ -158,14 +183,22 @@ async fn initiate_wire(
 ) -> Result<(StatusCode, Json<WireResponse>), AppError> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
-    if amount < min_amount() {
+    let floor = min_amount(&state);
+    if amount < floor {
         return Err(AppError::BadRequest(format!(
-            "amount below the high-value floor of {}",
-            min_amount()
+            "amount below the high-value floor of {floor}"
         )));
     }
     if !caller_owns_account(&state, req.from_account_id, caller.customer_id).await? {
         return Err(AppError::NotFound("account not found".into()));
+    }
+    // Idempotency replay: same (originating account, key) returns the original
+    // wire without re-sending. Checked before the funds/participant work so a
+    // retry is cheap; the partial unique index closes the concurrent-retry race.
+    if let Some(key) = &req.idempotency_key {
+        if let Some(existing) = load_wire_by_key(&state, req.from_account_id, key).await? {
+            return Ok((StatusCode::CREATED, Json(existing)));
+        }
     }
     // Counterparty institution must be a Lynx-capable, active participant.
     let ok: Option<(bool, bool)> = sqlx::query_as(
@@ -218,8 +251,8 @@ async fn initiate_wire(
         "INSERT INTO lynx_wires \
          (uetr, direction, status, local_account_id, counterparty_name, counterparty_institution, \
           counterparty_account, amount, currency, remittance_info, message_type, \
-          settlement_transaction_id, initiated_by, reference_number, sent_at) \
-         VALUES ($1,'outbound','sent',$2,$3,$4,$5,$6,'CAD',$7,'pacs.008',$8,$9,$10,CURRENT_TIMESTAMP) \
+          settlement_transaction_id, initiated_by, reference_number, idempotency_key, sent_at) \
+         VALUES ($1,'outbound','sent',$2,$3,$4,$5,$6,'CAD',$7,'pacs.008',$8,$9,$10,$11,CURRENT_TIMESTAMP) \
          RETURNING wire_id",
     )
     .bind(uetr)
@@ -232,8 +265,10 @@ async fn initiate_wire(
     .bind(hold.transaction_id)
     .bind(caller.customer_id)
     .bind(&hold.reference)
+    .bind(&req.idempotency_key)
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(wire_conflict)?;
 
     store_message(&mut tx, wire_id, "pacs.008", "emitted", &payload).await?;
     tx.commit().await?;
@@ -246,18 +281,27 @@ async fn list_wires(
     State(state): State<AppState>,
     caller: AuthenticatedCustomer,
 ) -> Result<Json<Vec<WireResponse>>, AppError> {
-    let ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT wire_id FROM lynx_wires WHERE local_account_id IN \
+    let rows = sqlx::query_as::<
+        _,
+        (Uuid, Uuid, String, String, Decimal, String, String, String, String, String, Option<String>),
+    >(
+        "SELECT wire_id, uetr, direction::text, status::text, amount, currency, \
+         counterparty_name, counterparty_institution, message_type, reference_number, gl_entry \
+         FROM lynx_wires WHERE local_account_id IN \
          (SELECT account_id FROM accounts WHERE customer_id = $1) ORDER BY created_at DESC",
     )
     .bind(caller.customer_id)
     .fetch_all(&state.pool)
     .await?;
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        out.push(load_wire(&state, id).await?);
-    }
-    Ok(Json(out))
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| WireResponse {
+                wire_id: r.0, uetr: r.1, direction: r.2, status: r.3, amount: r.4, currency: r.5,
+                counterparty_name: r.6, counterparty_institution: r.7, message_type: r.8,
+                reference_number: r.9, gl_entry: r.10,
+            })
+            .collect(),
+    ))
 }
 
 async fn get_wire(
@@ -308,6 +352,8 @@ async fn request_recall(
             "only a settled outbound wire can be recalled".into(),
         ));
     }
+    // Fast-path friendly error; the partial unique index idx_lynx_recalls_one_open
+    // is the real guard against two concurrent requests both passing this check.
     let open: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM lynx_recalls WHERE wire_id=$1 AND status='requested')",
     )
@@ -336,7 +382,13 @@ async fn request_recall(
     .bind(&reason)
     .bind(msg_id)
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
+            AppError::Conflict("a recall is already open".into())
+        }
+        _ => AppError::from(e),
+    })?;
     tx.commit().await?;
 
     Ok((
@@ -457,7 +509,7 @@ async fn network_inbound(
         iso20022::encode_pacs008(&msg)
     };
 
-    let wire_id: Uuid = sqlx::query_scalar(
+    let inserted: Result<Uuid, sqlx::Error> = sqlx::query_scalar(
         "INSERT INTO lynx_wires \
          (uetr, direction, status, local_account_id, counterparty_name, counterparty_institution, \
           counterparty_account, amount, currency, remittance_info, message_type, \
@@ -477,7 +529,28 @@ async fn network_inbound(
     .bind(&posting.gl_entry)
     .bind(format!("LYNXIN-{}", &uetr.to_string()[..8]))
     .fetch_one(&mut *tx)
-    .await?;
+    .await;
+    // The uetr is the network's end-to-end id and is UNIQUE. A duplicate means
+    // the network re-delivered a wire we already credited — roll back this second
+    // credit (undoing the accept_inbound posting) and replay the original wire,
+    // so a redelivery is idempotent rather than a double-credit or a raw 500.
+    let wire_id = match inserted {
+        Ok(id) => id,
+        Err(e) => {
+            let dup = matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"));
+            if dup {
+                tx.rollback().await?;
+                let existing: Uuid =
+                    sqlx::query_scalar("SELECT wire_id FROM lynx_wires WHERE uetr=$1")
+                        .bind(uetr)
+                        .fetch_one(&state.pool)
+                        .await?;
+                tracing::info!(%existing, %uetr, "🌐 Lynx inbound wire replayed (duplicate uetr)");
+                return Ok((StatusCode::CREATED, Json(load_wire(&state, existing).await?)));
+            }
+            return Err(AppError::from(e));
+        }
+    };
     store_message(&mut tx, wire_id, &message_type, "received", &payload).await?;
     tx.commit().await?;
 
@@ -667,18 +740,32 @@ async fn admin_reject_stale(
     _svc: AuthenticatedService,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let rail = resolve_lynx(&state).await?;
-    let mut tx = state.pool.begin().await?;
-
-    let rows: Vec<(Uuid, Uuid, Decimal, String)> = sqlx::query_as(
-        "SELECT wire_id, local_account_id, amount, reference_number FROM lynx_wires \
-         WHERE status='sent' AND sent_at < CURRENT_TIMESTAMP - make_interval(mins => $1) FOR UPDATE",
+    // Snapshot the due ids first (short read), then process each in its own tx so
+    // one bad row can't roll back the batch and we don't hold a lock on every
+    // stale wire at once (mirrors interac::sweep_expired).
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT wire_id FROM lynx_wires \
+         WHERE status='sent' AND sent_at < CURRENT_TIMESTAMP - make_interval(mins => $1)",
     )
-    .bind(stale_minutes())
-    .fetch_all(&mut *tx)
+    .bind(stale_minutes(&state))
+    .fetch_all(&state.pool)
     .await?;
 
     let mut rejected = 0i64;
-    for (wire_id, local_account_id, amount, reference) in rows {
+    for wire_id in due {
+        let mut tx = state.pool.begin().await?;
+        // Re-lock + re-check (a concurrent settle may have won the race).
+        let row: Option<(Uuid, Decimal, String)> = sqlx::query_as(
+            "SELECT local_account_id, amount, reference_number FROM lynx_wires \
+             WHERE wire_id=$1 AND status='sent' FOR UPDATE",
+        )
+        .bind(wire_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((local_account_id, amount, reference)) = row else {
+            tx.rollback().await?;
+            continue;
+        };
         let hold = Hold {
             from_account: local_account_id,
             amount,
@@ -693,9 +780,9 @@ async fn admin_reject_stale(
             .bind(wire_id)
             .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         rejected += 1;
     }
-    tx.commit().await?;
 
     Ok(Json(serde_json::json!({ "rejected": rejected })))
 }

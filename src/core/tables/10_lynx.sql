@@ -13,24 +13,30 @@ CREATE TABLE lynx_wires (
     counterparty_name         VARCHAR(140) NOT NULL,
     counterparty_institution  VARCHAR(3) NOT NULL REFERENCES rail_participants(institution_number),
     counterparty_account      VARCHAR(34) NOT NULL,
-    amount                    DECIMAL(19,4) NOT NULL,
+    amount                    DECIMAL(15,2) NOT NULL,
     currency                  VARCHAR(3) NOT NULL DEFAULT 'CAD',
     remittance_info           VARCHAR(140),
     message_type              VARCHAR(12) NOT NULL DEFAULT 'pacs.008',
     settlement_transaction_id UUID REFERENCES transactions(transaction_id),
     gl_entry                  VARCHAR(120),
     initiated_by              UUID REFERENCES customers(customer_id),
+    idempotency_key           VARCHAR(255),
     reference_number          VARCHAR(50) NOT NULL UNIQUE,
     created_at                TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     sent_at                   TIMESTAMP WITH TIME ZONE,
     settled_at                TIMESTAMP WITH TIME ZONE,
     CONSTRAINT chk_lynx_amount_positive  CHECK (amount > 0),
-    CONSTRAINT chk_lynx_amount_precision CHECK (amount = ROUND(amount, 4)),
+    CONSTRAINT chk_lynx_amount_precision CHECK (amount = ROUND(amount, 2)),
     CONSTRAINT chk_lynx_currency_cad     CHECK (currency = 'CAD')
 );
 CREATE INDEX idx_lynx_wires_status ON lynx_wires (status);
 CREATE INDEX idx_lynx_wires_local  ON lynx_wires (local_account_id);
 CREATE INDEX idx_lynx_wires_initiator ON lynx_wires (initiated_by);
+-- A retried outbound wire (same originating account + idempotency key) must not
+-- double-send on this finality-settled rail. Mirrors idx_aft_entries_idempotency.
+CREATE UNIQUE INDEX idx_lynx_wires_idempotency
+    ON lynx_wires (local_account_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE lynx_messages (
     message_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,3 +64,7 @@ CREATE TABLE lynx_recalls (
 );
 CREATE INDEX idx_lynx_recalls_wire ON lynx_recalls (wire_id);
 CREATE INDEX idx_lynx_recalls_status ON lynx_recalls (status);
+-- At most one open recall per wire. Without this two concurrent recall requests
+-- both pass the unlocked "no open recall" check and each accept refunds the
+-- sender. Mirrors idx_aft_batches_one_open.
+CREATE UNIQUE INDEX idx_lynx_recalls_one_open ON lynx_recalls (wire_id) WHERE status = 'requested';
