@@ -125,3 +125,30 @@ pub struct AgentTokenRequest {
     pub agent_secret: String,
     pub mandate_id: Uuid,
 }
+
+/// Bare agent credentials (`POST /api/v1/auth/agent-mandates`): used to
+/// discover the agent's own active mandates, so one agent can hold several
+/// grants (different accounts, different scopes) behind a single registration.
+#[derive(Debug, Deserialize, Validate)]
+pub struct AgentCredentialsRequest {
+    pub agent_id: Uuid,
+    #[validate(length(min = 1))]
+    pub agent_secret: String,
+}
+
+/// One of the agent's own active grants, as returned by mandate discovery.
+/// Carries just enough account identity to *address* the account in
+/// conversation (type + last-4) — full account detail stays behind the
+/// mandate-pinned read surface.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AgentMandateSummary {
+    pub mandate_id: Uuid,
+    pub account_id: Uuid,
+    pub account_type: String,
+    pub account_last4: String,
+    pub scopes: Vec<String>,
+    pub max_per_tx: Option<Decimal>,
+    pub daily_cap: Option<Decimal>,
+    pub daily_used: Decimal,
+    pub expires_at: DateTime<Utc>,
+}

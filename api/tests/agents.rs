@@ -1021,3 +1021,74 @@ async fn mandate_activity_is_visible_to_its_owner() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 404, "cross-customer activity");
 }
+
+// ---------------------------------------------------------------------------
+// One agent, many mandates: discovery (POST /auth/agent-mandates)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn one_agent_discovers_its_many_mandates() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let chequing = create_account(&c, &token, "chequing").await;
+    let savings = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+
+    // Two grants with DIFFERENT scopes: read-only on chequing,
+    // read+transfer (capped) on savings.
+    let read_only = grant_mandate(&c, &token, agent_id, chequing, &["read:balance"]).await;
+    let transferable =
+        grant_transfer_mandate(&c, &token, agent_id, savings, 200.0, 500.0, None).await;
+
+    let discover = |secret: String| {
+        let c = c.clone();
+        async move {
+            c.post(format!("{}/api/v1/auth/agent-mandates", base_url()))
+                .json(&json!({ "agent_id": agent_id, "agent_secret": secret }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // The agent sees BOTH grants, each with its own scopes/caps/account label.
+    let resp = discover(secret.clone()).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let v: Value = resp.json().await.unwrap();
+    let list = v.as_array().unwrap();
+    assert_eq!(list.len(), 2, "both mandates discovered: {list:?}");
+    let ro = list
+        .iter()
+        .find(|m| m["mandate_id"] == read_only.to_string().as_str())
+        .unwrap();
+    assert_eq!(ro["account_type"], "chequing");
+    assert_eq!(ro["scopes"], json!(["read:balance"]));
+    assert!(ro["max_per_tx"].is_null());
+    let tr = list
+        .iter()
+        .find(|m| m["mandate_id"] == transferable.to_string().as_str())
+        .unwrap();
+    assert_eq!(tr["account_type"], "savings");
+    assert_eq!(as_num(&tr["max_per_tx"]), 200.0);
+    assert_eq!(as_num(&tr["daily_used"]), 0.0);
+    assert_eq!(tr["account_last4"].as_str().unwrap().len(), 4);
+
+    // Revoking ONE grant removes only that account from the agent's view.
+    let resp = c
+        .delete(format!("{}/api/v1/mandates/{}", base_url(), read_only))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 204);
+    let resp = discover(secret.clone()).await;
+    let v: Value = resp.json().await.unwrap();
+    let list = v.as_array().unwrap();
+    assert_eq!(list.len(), 1, "revoked mandate no longer discovered");
+    assert_eq!(list[0]["mandate_id"], transferable.to_string().as_str());
+
+    // Wrong secret → generic 401 (no enumeration).
+    let resp = discover("not-the-secret".to_string()).await;
+    assert_eq!(resp.status().as_u16(), 401);
+}

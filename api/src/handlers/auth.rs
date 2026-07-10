@@ -12,7 +12,7 @@ use validator::Validate;
 use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::middleware::auth::AuthenticatedCustomer;
-use crate::models::agent::AgentTokenRequest;
+use crate::models::agent::{AgentCredentialsRequest, AgentMandateSummary, AgentTokenRequest};
 use crate::models::auth::{
     AccessTokenResponse, LoginRequest, LoginResponse, RefreshRequest, ServiceTokenRequest,
 };
@@ -25,6 +25,7 @@ pub fn auth_routes() -> Router<AppState> {
         .route("/login", post(login))
         .route("/service-token", post(issue_service_token))
         .route("/agent-token", post(issue_agent_token))
+        .route("/agent-mandates", post(list_agent_mandates))
         .route("/refresh", post(refresh_token))
         .route("/logout", post(logout))
 }
@@ -115,6 +116,64 @@ async fn issue_service_token(
             expires_in: state.settings.jwt.expires_in,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// agent mandate discovery (agent plane)
+// ---------------------------------------------------------------------------
+
+/// List the calling agent's OWN active mandates (client-credentials style).
+///
+/// This is what lets one agent hold several grants — different accounts,
+/// different scopes — behind a single registration: the agent discovers its
+/// mandate set here, then mints a per-mandate pointer token (`/agent-token`)
+/// for whichever account the conversation needs. Revoked/expired mandates
+/// simply stop appearing. Only the agent's own grants are visible (the
+/// customer consented to each one at grant time); credential failures are the
+/// same generic 401 as token issuance.
+async fn list_agent_mandates(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentCredentialsRequest>,
+) -> Result<Json<Vec<AgentMandateSummary>>, AppError> {
+    payload.validate()?;
+
+    // Same single-query credential check as issue_agent_token.
+    let agent_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM agents \
+         WHERE agent_id = $1 AND secret_hash = encode(digest($2, 'sha256'), 'hex')",
+    )
+    .bind(payload.agent_id)
+    .bind(&payload.agent_secret)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    match agent_status.as_deref() {
+        Some("active") => {}
+        Some(_) => return Err(AppError::MandateInactive),
+        None => {
+            return Err(AppError::Authentication(
+                "Invalid agent credentials".to_string(),
+            ))
+        }
+    }
+
+    let mandates = sqlx::query_as::<_, AgentMandateSummary>(
+        "SELECT m.mandate_id, m.account_id, a.account_type::text AS account_type, \
+                right(a.account_number, 4) AS account_last4, m.scopes, m.max_per_tx, \
+                m.daily_cap, \
+                CASE WHEN m.last_reset_date < CURRENT_DATE THEN 0 ELSE m.daily_used END \
+                    AS daily_used, \
+                m.expires_at \
+         FROM mandates m JOIN accounts a ON a.account_id = m.account_id \
+         WHERE m.agent_id = $1 AND m.status = 'active' AND m.expires_at > CURRENT_TIMESTAMP \
+         ORDER BY m.created_at",
+    )
+    .bind(payload.agent_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(Json(mandates))
 }
 
 // ---------------------------------------------------------------------------
