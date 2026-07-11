@@ -16,6 +16,8 @@ pub struct Settings {
     pub interac: InteracSettings,
     #[serde(default)]
     pub lynx: LynxSettings,
+    #[serde(default)]
+    pub agent: AgentSettings,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -128,6 +130,27 @@ impl Default for LynxSettings {
     }
 }
 
+/// Agent-plane (agentic banking) tunables. Overridable via `config/*.toml` or
+/// the layered env var `NANO_BANK__AGENT__APPROVAL_TTL_MINUTES`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AgentSettings {
+    /// How long a step-up pending approval stays actionable before it expires.
+    #[serde(default = "default_approval_ttl_minutes")]
+    pub approval_ttl_minutes: i64,
+}
+
+fn default_approval_ttl_minutes() -> i64 {
+    60
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            approval_ttl_minutes: default_approval_ttl_minutes(),
+        }
+    }
+}
+
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
@@ -207,6 +230,7 @@ impl Default for Settings {
             },
             interac: InteracSettings::default(),
             lynx: LynxSettings::default(),
+            agent: AgentSettings::default(),
         }
     }
 }

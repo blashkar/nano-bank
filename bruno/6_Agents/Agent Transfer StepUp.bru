@@ -1,0 +1,40 @@
+meta {
+  name: Agent Transfer StepUp
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/v1/agent/transfers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{agentAccessToken}}
+}
+
+body:json {
+  {
+    "to_account_id": "{{savingsId}}",
+    "amount": 250.00,
+    "description": "over-cap payment (needs the owner)",
+    "idempotency_key": "bruno-agent-pay-stepup-001"
+  }
+}
+
+script:post-response {
+  if (res.body.approval_id) bru.setEnvVar("approvalId", res.body.approval_id);
+}
+
+docs {
+  STEP-UP (Phase 3): $250 breaches the $200 max_per_tx, but instead of a 403
+  it PARKS as a pending approval (202) — nothing moves until the owner
+  decides. Re-sending the same idempotency_key returns the SAME open ask.
+  Saves approvalId for the poll/approve requests below.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

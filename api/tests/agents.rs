@@ -763,7 +763,7 @@ async fn agent_transfer_happy_path_and_replay() {
 }
 
 #[tokio::test]
-async fn transfer_caps_are_step_up_denials() {
+async fn transfer_caps_step_up_instead_of_denying() {
     let c = client();
     require_stack!(&c);
     let (_customer, token) = session(&c).await;
@@ -775,20 +775,24 @@ async fn transfer_caps_are_step_up_denials() {
     let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
     let atoken = agent_token(&c, agent_id, &secret, mandate).await;
 
-    // Over max_per_tx → 403 POLICY_DENIED, nothing moved.
+    // Over max_per_tx → 202: parked for step-up approval, nothing moved.
     let resp = agent_transfer(&c, &atoken, b, 250.0, &Uuid::new_v4().to_string()).await;
-    assert_eq!(resp.status().as_u16(), 403, "over max_per_tx");
-    assert_eq!(error_code(resp).await, "POLICY_DENIED");
+    assert_eq!(resp.status().as_u16(), 202, "over max_per_tx parks");
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "pending");
+    assert_eq!(v["reason"], "MAX_PER_TX_EXCEEDED");
     assert_eq!(balance(&c, &token, b).await, 0.0);
     assert_eq!(mandate_daily_used(&c, &token, mandate).await, 0.0);
 
-    // Two $180s fit the $500 cap; the third breaches it.
+    // Two $180s fit the $500 cap; the third breaches it (parks too).
     for _ in 0..2 {
         let resp = agent_transfer(&c, &atoken, b, 180.0, &Uuid::new_v4().to_string()).await;
         assert_eq!(resp.status().as_u16(), 201);
     }
     let resp = agent_transfer(&c, &atoken, b, 180.0, &Uuid::new_v4().to_string()).await;
-    assert_eq!(resp.status().as_u16(), 403, "daily cap breached");
+    assert_eq!(resp.status().as_u16(), 202, "daily cap breach parks");
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["reason"], "DAILY_CAP_EXCEEDED");
     assert_eq!(mandate_daily_used(&c, &token, mandate).await, 360.0);
 
     // The audit distinguishes step-up candidates from hard denials.
@@ -840,7 +844,8 @@ async fn concurrent_transfers_cannot_beat_the_cap() {
     );
     let mut codes = [r1.status().as_u16(), r2.status().as_u16()];
     codes.sort_unstable();
-    assert_eq!(codes, [201, 403], "exactly one wins the cap race");
+    // The loser doesn't fail — it parks for step-up approval (202).
+    assert_eq!(codes, [201, 202], "exactly one wins the cap race");
     assert_eq!(mandate_daily_used(&c, &token, mandate).await, 300.0);
     assert_eq!(balance(&c, &token, b).await, 300.0);
 }
@@ -1091,4 +1096,389 @@ async fn one_agent_discovers_its_many_mandates() {
     // Wrong secret → generic 401 (no enumeration).
     let resp = discover("not-the-secret".to_string()).await;
     assert_eq!(resp.status().as_u16(), 401);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: step-up approvals
+// ---------------------------------------------------------------------------
+
+/// The agent's 202 payload for an over-cap transfer (parked ask).
+async fn park(c: &reqwest::Client, atoken: &str, to: Uuid, amount: f64, key: &str) -> Value {
+    let resp = agent_transfer(c, atoken, to, amount, key).await;
+    assert_eq!(resp.status().as_u16(), 202, "over-cap transfer parks");
+    resp.json().await.unwrap()
+}
+
+async fn resolve_approval(
+    c: &reqwest::Client,
+    token: &str,
+    approval_id: &str,
+    verb: &str,
+) -> reqwest::Response {
+    c.post(format!("{}/api/v1/approvals/{approval_id}/{verb}", base_url()))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// The agent's poll of its own ask.
+async fn poll_approval(c: &reqwest::Client, atoken: &str, approval_id: &str) -> reqwest::Response {
+    agent_get(c, atoken, &format!("/api/v1/agent/approvals/{approval_id}")).await
+}
+
+#[tokio::test]
+async fn parked_ask_is_idempotent_and_visible_to_both_sides() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let key = format!("stepup-{}", Uuid::new_v4());
+    let ask = park(&c, &atoken, b, 250.0, &key).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+    assert_eq!(ask["status"], "pending");
+    assert_eq!(ask["reason"], "MAX_PER_TX_EXCEEDED");
+    assert!(ask["transaction_id"].is_null());
+
+    // An agent retry with the SAME key returns the SAME open ask, not a second one.
+    let again = park(&c, &atoken, b, 250.0, &key).await;
+    assert_eq!(again["approval_id"].as_str().unwrap(), approval_id);
+
+    // The agent can poll its fate…
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "pending");
+
+    // …and the owner sees it with the deciding context.
+    let resp = c
+        .get(format!("{}/api/v1/approvals?status=pending", base_url()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let list: Value = resp.json().await.unwrap();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["approval_id"] == approval_id.as_str())
+        .expect("owner sees the pending ask");
+    assert_eq!(as_num(&row["amount"]), 250.0);
+    assert_eq!(row["reason"], "MAX_PER_TX_EXCEEDED");
+    assert!(!row["agent_display_name"].as_str().unwrap().is_empty());
+    assert_eq!(row["account_last4"].as_str().unwrap().len(), 4);
+
+    // Another mandate's agent cannot see the ask (404 — no existence leak).
+    let other_account = create_account(&c, &token, "savings").await;
+    let other_mandate = grant_mandate(&c, &token, agent_id, other_account, &["read:balance"]).await;
+    let other_atoken = agent_token(&c, agent_id, &secret, other_mandate).await;
+    let resp = poll_approval(&c, &other_atoken, &approval_id).await;
+    assert_eq!(resp.status().as_u16(), 404, "cross-mandate poll");
+}
+
+#[tokio::test]
+async fn approve_executes_with_caps_overridden() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let key = format!("stepup-{}", Uuid::new_v4());
+    let ask = park(&c, &atoken, b, 250.0, &key).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // The owner approves: the transfer executes despite max_per_tx $200.
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 201, "approve executes");
+    let v: Value = resp.json().await.unwrap();
+    let txn_id = v["transaction_id"].as_str().unwrap().to_string();
+    assert_eq!(balance(&c, &token, b).await, 250.0);
+    assert_eq!(balance(&c, &token, a).await, 748.5); // amount + $1.50 fee
+    // The overage still consumed the daily allowance.
+    assert_eq!(mandate_daily_used(&c, &token, mandate).await, 250.0);
+
+    // The agent's poll shows the outcome, transaction included.
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "approved");
+    assert_eq!(v["transaction_id"].as_str().unwrap(), txn_id);
+
+    // Re-sending the original request replays the executed transfer (200).
+    let resp = agent_transfer(&c, &atoken, b, 250.0, &key).await;
+    assert_eq!(resp.status().as_u16(), 200, "post-approval replay");
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["transaction_id"].as_str().unwrap(), txn_id);
+
+    // A second approve is a clean conflict.
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 409, "double approve");
+
+    // The consent decision is on the audit trail with the transaction.
+    if let Some(db) = test_db().await {
+        let audited: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_actions WHERE mandate_id = $1 \
+             AND decision = 'allowed' AND reason = 'STEP_UP_APPROVED' \
+             AND transaction_id = $2::uuid)",
+        )
+        .bind(mandate)
+        .bind(&txn_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(audited, "STEP_UP_APPROVED audited with the transaction");
+    }
+}
+
+#[tokio::test]
+async fn approved_overage_saturates_the_daily_cap() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    // $360 spent within caps; the next $190 (fits max_per_tx) breaches the day.
+    for _ in 0..2 {
+        let resp = agent_transfer(&c, &atoken, b, 180.0, &Uuid::new_v4().to_string()).await;
+        assert_eq!(resp.status().as_u16(), 201);
+    }
+    let ask = park(&c, &atoken, b, 190.0, &Uuid::new_v4().to_string()).await;
+    assert_eq!(ask["reason"], "DAILY_CAP_EXCEEDED");
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 201, "day-cap overage approved");
+    assert_eq!(balance(&c, &token, b).await, 550.0);
+    // daily_used saturates at the cap (schema invariant daily_used <= daily_cap).
+    assert_eq!(mandate_daily_used(&c, &token, mandate).await, 500.0);
+
+    // The day is spent: even a small transfer now steps up.
+    let resp = agent_transfer(&c, &atoken, b, 5.0, &Uuid::new_v4().to_string()).await;
+    assert_eq!(resp.status().as_u16(), 202, "saturated day steps up");
+}
+
+#[tokio::test]
+async fn decline_kills_the_ask() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let key = format!("stepup-{}", Uuid::new_v4());
+    let ask = park(&c, &atoken, b, 250.0, &key).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    let resp = resolve_approval(&c, &token, &approval_id, "decline").await;
+    assert_eq!(resp.status().as_u16(), 204, "decline");
+    assert_eq!(balance(&c, &token, b).await, 0.0);
+
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "declined");
+
+    // A declined ask cannot be approved after the fact.
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 409, "approve after decline");
+
+    // The agent asking AGAIN (same key) opens a fresh ask — the old decision
+    // stands, the new one is its own row.
+    let again = park(&c, &atoken, b, 250.0, &key).await;
+    assert_ne!(again["approval_id"].as_str().unwrap(), approval_id);
+
+    if let Some(db) = test_db().await {
+        let audited: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_actions WHERE mandate_id = $1 \
+             AND decision = 'denied' AND reason = 'STEP_UP_DECLINED')",
+        )
+        .bind(mandate)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(audited, "STEP_UP_DECLINED audited");
+    }
+}
+
+#[tokio::test]
+async fn expired_ask_is_not_actionable() {
+    let c = client();
+    require_stack!(&c);
+    let Some(db) = test_db().await else {
+        eprintln!("SKIP: no direct DB access");
+        return;
+    };
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let ask = park(&c, &atoken, b, 250.0, &format!("stepup-{}", Uuid::new_v4())).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // Age the ask past its TTL.
+    sqlx::query(
+        "UPDATE pending_approvals SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute' \
+         WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 409, "expired approve");
+    assert_eq!(balance(&c, &token, b).await, 0.0);
+
+    // Lazy expiry surfaced the state to both sides.
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "expired");
+}
+
+#[tokio::test]
+async fn approvals_are_customer_plane_only() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let ask = park(&c, &atoken, b, 250.0, &format!("stepup-{}", Uuid::new_v4())).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // The AGENT cannot resolve its own ask — wrong plane.
+    for verb in ["approve", "decline"] {
+        let resp = resolve_approval(&c, &atoken, &approval_id, verb).await;
+        assert!(
+            [401, 403].contains(&resp.status().as_u16()),
+            "agent token on /{verb}: {}",
+            resp.status()
+        );
+    }
+    let resp = c
+        .get(format!("{}/api/v1/approvals", base_url()))
+        .bearer_auth(&atoken)
+        .send()
+        .await
+        .unwrap();
+    assert!([401, 403].contains(&resp.status().as_u16()), "agent list");
+
+    // Another CUSTOMER sees 404s — no existence leak.
+    let (_other, other_token) = session(&c).await;
+    let resp = resolve_approval(&c, &other_token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 404, "other customer approve");
+    let resp = c
+        .get(format!("{}/api/v1/approvals", base_url()))
+        .bearer_auth(&other_token)
+        .send()
+        .await
+        .unwrap();
+    let list: Value = resp.json().await.unwrap();
+    assert!(
+        !list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["approval_id"] == approval_id.as_str()),
+        "other customer's list must not contain the ask"
+    );
+
+    // Still pending — nothing above resolved it.
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "pending");
+}
+
+#[tokio::test]
+async fn approve_failure_reverts_the_claim() {
+    let c = client();
+    require_stack!(&c);
+    let (_customer, token) = session(&c).await;
+    // Underfunded on purpose: $100 in the account, a $250 ask parked.
+    let Some(a) = funded_account(&c, &token, 100.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let ask = park(&c, &atoken, b, 250.0, &format!("stepup-{}", Uuid::new_v4())).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // Approve fails on funds; the ask reverts to pending (still actionable).
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 400, "insufficient funds");
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "pending");
+    assert_eq!(mandate_daily_used(&c, &token, mandate).await, 0.0);
+
+    // Now the mandate dies; approving is a state conflict for the customer
+    // (their credential is fine), and the claim reverts again.
+    let resp = c
+        .delete(format!("{}/api/v1/mandates/{}", base_url(), mandate))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 204);
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 409, "revoked mandate");
+    if let Some(db) = test_db().await {
+        let (status,): (String,) = sqlx::query_as(
+            "SELECT status FROM pending_approvals WHERE approval_id = $1::uuid",
+        )
+        .bind(&approval_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(status, "pending", "claim reverted after mandate death");
+        let audited: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_actions WHERE mandate_id = $1 \
+             AND reason = 'MANDATE_INACTIVE')",
+        )
+        .bind(mandate)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(audited, "the failed approval attempt is audited");
+    }
+    // The owner can still clean up: decline works on the reverted ask.
+    let resp = resolve_approval(&c, &token, &approval_id, "decline").await;
+    assert_eq!(resp.status().as_u16(), 204, "decline after revert");
 }

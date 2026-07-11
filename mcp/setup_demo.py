@@ -212,7 +212,13 @@ NEXT STEPS
      or answers for both. Reply with just the last-4; a full number is never needed.
    • "What's my chequing balance?"               → unique, resolves directly
    • "Move $150 from chequing into my savings ({payee_id})."
-   • "Now move $250 more." → POLICY_DENIED (over the $200 per-transaction cap)
+   • "Now move $250 more." → over the $200/tx cap, so it PARKS as a pending
+     approval (nothing moves). THE STEP-UP MOMENT: approve or decline it in
+     the "Step-up approvals" section at {BASE}/app — or from the terminal:
+       curl -s {BASE}/api/v1/approvals?status=pending -H "Authorization: Bearer $DEMO_CUSTOMER_TOKEN"
+       curl -s -X POST {BASE}/api/v1/approvals/<approval_id>/approve -H "Authorization: Bearer $DEMO_CUSTOMER_TOKEN"
+     …then ask Claude to "check on that approval" → it reports the executed
+     transfer. (Decline instead, and Claude reports that — final, no retry.)
    • "Transfer $20 FROM my savings." → POLICY_DENIED SCOPE_MISSING (read-only!)
    • Grant/revoke more mandates in the UI at {BASE}/app — Claude picks up the
      change on its very next call, no re-registration.

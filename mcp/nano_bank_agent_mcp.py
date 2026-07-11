@@ -160,7 +160,7 @@ def _agent_call(
                 json=body,
                 headers={"Authorization": f"Bearer {_tokens[mandate_id]['value']}"},
             )
-            if resp.status_code in (200, 201):
+            if resp.status_code in (200, 201, 202):
                 return resp.json()
             if resp.status_code == 401 and attempt == 1:
                 if err := _mint_token(client, mandate_id):
@@ -271,9 +271,13 @@ def transfer(
     from_account selects which mandate funds it (label / type / last-4 from
     list_my_access) — that mandate needs the transfer:initiate scope, and the
     bank enforces ITS limits atomically: max_per_tx, the daily cap, and (if
-    set) the payee allowlist. A breach returns POLICY_DENIED with the reason
-    (MAX_PER_TX_EXCEEDED / DAILY_CAP_EXCEEDED / PAYEE_NOT_ALLOWED); explain it
-    to the user rather than retrying. A flat $1.50 fee applies.
+    set) the payee allowlist. A payee breach returns POLICY_DENIED
+    (PAYEE_NOT_ALLOWED) — explain it, don't retry. An AMOUNT-cap breach
+    (MAX_PER_TX_EXCEEDED / DAILY_CAP_EXCEEDED) does NOT fail: the bank parks
+    the transfer as a `pending_approval` for the account owner to approve or
+    decline (in the consent UI at /app, or via their approvals API). Tell the
+    user their approval is needed, then use check_approval to learn the
+    outcome — do NOT re-send the payment. A flat $1.50 fee applies.
 
     to_account: either another MANDATED account by label/type/last-4 (e.g.
     "savings" — no id needed) or a full account UUID for any other
@@ -320,6 +324,38 @@ def transfer(
             "idempotency_key": idempotency_key,
         },
     )
+    if "error" not in out:
+        out["from_account"] = _label(m)
+        # A 202 body is a parked ask, not a completed transfer.
+        if out.get("status") == "pending" and "approval_id" in out:
+            return {
+                "pending_approval": out,
+                "from_account": _label(m),
+                "note": "This amount exceeds the mandate's cap "
+                        f"({out.get('reason')}), so the bank parked it for the "
+                        "account owner's approval — nothing has moved yet. Tell "
+                        "the user to approve or decline it (consent UI at /app, "
+                        "or their approvals API), then call check_approval with "
+                        "this approval_id. Do NOT re-send the payment.",
+            }
+    return out
+
+
+@mcp.tool()
+def check_approval(approval_id: str, account: str = "") -> dict[str, Any]:
+    """Fate of a parked (step-up) transfer: pending / approved / declined /
+    expired. `approval_id` comes from a transfer that returned
+    `pending_approval`. `account` picks the mandate the transfer was FUNDED
+    from (same value you passed as from_account); leave empty when only one
+    account is mandated. When approved, the response carries the executed
+    transaction_id — report success to the user. Declined/expired are final:
+    don't retry the payment unless the user explicitly asks again."""
+    r = _with_resolved(account)
+    if "error" in r:
+        return r
+    m = r["mandate"]
+    out = _agent_call(m["mandate_id"], "GET",
+                      f"/api/v1/agent/approvals/{approval_id.strip()}")
     if "error" not in out:
         out["from_account"] = _label(m)
     return out

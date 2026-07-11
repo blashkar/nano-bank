@@ -136,6 +136,43 @@ pub struct AgentCredentialsRequest {
     pub agent_secret: String,
 }
 
+/// A step-up approval as seen by the agent that raised it: returned with the
+/// **202** on an over-cap transfer, and by the poll surface
+/// (`GET /api/v1/agent/approvals/{id}`). `transaction_id` appears once the
+/// customer approved and the transfer executed.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AgentApprovalStatus {
+    pub approval_id: Uuid,
+    pub status: String,
+    /// Which cap tripped: `MAX_PER_TX_EXCEEDED` / `DAILY_CAP_EXCEEDED`.
+    pub reason: String,
+    pub amount: Decimal,
+    pub to_account_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+    pub transaction_id: Option<Uuid>,
+}
+
+/// A step-up approval as seen by its granting customer
+/// (`GET /api/v1/approvals`): everything needed to decide — which agent asked,
+/// out of which account, to where, how much, and which cap it breached.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PendingApprovalResponse {
+    pub approval_id: Uuid,
+    pub mandate_id: Uuid,
+    pub agent_display_name: String,
+    pub account_id: Uuid,
+    pub account_last4: String,
+    pub to_account_id: Uuid,
+    pub amount: Decimal,
+    pub description: String,
+    pub reason: String,
+    pub status: String,
+    pub transaction_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
 /// One of the agent's own active grants, as returned by mandate discovery.
 /// Carries just enough account identity to *address* the account in
 /// conversation (type + last-4) — full account detail stays behind the

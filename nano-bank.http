@@ -427,8 +427,7 @@ Authorization: Bearer {{agentAccess}}
 
 # Agent transfer OUT of the mandated account (Phase 2). idempotency_key is
 # REQUIRED — replaying the same key returns the original transfer (200), no
-# double spend. Try amount 250.00 → 403 POLICY_DENIED MAX_PER_TX_EXCEEDED;
-# a to_account_id not on allowed_payees → PAYEE_NOT_ALLOWED.
+# double spend. A to_account_id not on allowed_payees → 403 PAYEE_NOT_ALLOWED.
 POST {{baseUrl}}/api/v1/agent/transfers
 Content-Type: application/json
 Authorization: Bearer {{agentAccess}}
@@ -439,6 +438,45 @@ Authorization: Bearer {{agentAccess}}
     "description": "agent-initiated payment",
     "idempotency_key": "http-demo-agent-pay-001"
 }
+
+###
+
+# STEP-UP (Phase 3): an over-cap amount doesn't fail — it PARKS as a pending
+# approval (202) for the owner to approve/decline. Nothing moves yet.
+# @name stepUp
+POST {{baseUrl}}/api/v1/agent/transfers
+Content-Type: application/json
+Authorization: Bearer {{agentAccess}}
+
+{
+    "to_account_id": "{{acctB.response.body.account_id}}",
+    "amount": 250.00,
+    "description": "over-cap payment (needs the owner)",
+    "idempotency_key": "http-demo-agent-pay-002"
+}
+
+###
+
+@approvalId = {{stepUp.response.body.approval_id}}
+
+# The agent polls the fate of its parked ask (pinned to its mandate)
+GET {{baseUrl}}/api/v1/agent/approvals/{{approvalId}}
+Accept: application/json
+Authorization: Bearer {{agentAccess}}
+
+###
+
+# The OWNER's queue (customer token — the agent cannot resolve its own ask)
+GET {{baseUrl}}/api/v1/approvals?status=pending
+Accept: application/json
+Authorization: Bearer {{txnToken}}
+
+###
+
+# Approve: executes the transfer — this consent overrides the amount caps for
+# that ONE transfer (scope/payee/funds still re-checked). Or POST .../decline.
+POST {{baseUrl}}/api/v1/approvals/{{approvalId}}/approve
+Authorization: Bearer {{txnToken}}
 
 ###
 

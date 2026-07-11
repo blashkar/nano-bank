@@ -45,7 +45,9 @@ claude mcp add nano-bank-agent \
 #      — a full account number is never needed for a mandated account
 #    • "What's my chequing balance?"  → unique, resolves directly
 #    • "Move $150 from chequing into my savings (<payee id from the seed output>)."
-#    • "Now move $250 more."          → denied: over the $200 per-transaction cap
+#    • "Now move $250 more."          → over the $200/tx cap: parks as a PENDING
+#      APPROVAL — approve/decline it in /app ("Step-up approvals"), then ask
+#      Claude to check on it
 #    • "Transfer $20 FROM my savings" → denied: SCOPE_MISSING (savings is read-only)
 #    • "Send $50 to <another uuid>"   → denied: payee not on the allowlist
 ```
@@ -68,10 +70,30 @@ The seeded mandate allows transfers **only** to the demo savings account, at mos
 transaction** and **$500 per day** — enforced (and the spend *reserved*) under a row lock in
 the bank, not in the agent. `transfer` requires an idempotency key, so a retried payment can
 never double-spend: the tool's docstring instructs the model to reuse the key on retry.
-Breaches come back as structured `POLICY_DENIED` results (`MAX_PER_TX_EXCEEDED`,
-`DAILY_CAP_EXCEEDED`, `PAYEE_NOT_ALLOWED`) that Claude reads and explains; the two cap
-overruns are audited as `step_up_required` — the exact rows Phase 3's human-approval flow
-will consume.
+A payee breach comes back as a structured `POLICY_DENIED` (`PAYEE_NOT_ALLOWED`) that Claude
+reads and explains.
+
+### The step-up demo (Phase 3)
+
+An **amount**-cap breach (`MAX_PER_TX_EXCEEDED` / `DAILY_CAP_EXCEEDED`) no longer dead-ends:
+the bank **parks it as a pending approval** (202) and Claude tells you your approval is
+needed — nothing has moved. As the owner, approve or decline in `/app` ("Step-up approvals",
+with the big Approve & send / Decline buttons) or from the terminal:
+
+```bash
+curl -s "http://localhost:8081/api/v1/approvals?status=pending" \
+  -H "Authorization: Bearer $DEMO_CUSTOMER_TOKEN"          # find the approval_id
+curl -s -X POST http://localhost:8081/api/v1/approvals/$APPROVAL_ID/approve \
+  -H "Authorization: Bearer $DEMO_CUSTOMER_TOKEN"          # or .../decline
+```
+
+Approve executes the transfer — your explicit consent overrides the caps *for that one
+transfer* (the spend still counts toward the daily total; scope/payee/funds are re-checked).
+Then ask Claude to *"check on that approval"* (`check_approval`) and it reports the executed
+transaction. The agent **cannot** approve its own ask — the approve/decline endpoints live on
+the customer plane and reject agent tokens. Unresolved asks expire (default 60 min,
+`NANO_BANK__AGENT__APPROVAL_TTL_MINUTES`). Every step — the park (`step_up_required`), the
+resolution (`STEP_UP_APPROVED` / `STEP_UP_DECLINED`) — is on the same audit trail.
 
 ## The revoke moment
 

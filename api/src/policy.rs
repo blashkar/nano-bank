@@ -26,6 +26,10 @@ pub const REASON_PAYEE_NOT_ALLOWED: &str = "PAYEE_NOT_ALLOWED";
 /// Phase 3 turns exactly these into pending human approvals.
 pub const REASON_MAX_PER_TX_EXCEEDED: &str = "MAX_PER_TX_EXCEEDED";
 pub const REASON_DAILY_CAP_EXCEEDED: &str = "DAILY_CAP_EXCEEDED";
+/// Step-up resolutions (Phase 3): the customer's explicit decision on a
+/// parked over-cap transfer, audited under the transfer operation.
+pub const REASON_STEP_UP_APPROVED: &str = "STEP_UP_APPROVED";
+pub const REASON_STEP_UP_DECLINED: &str = "STEP_UP_DECLINED";
 
 /// Audit decision for a reason code: the two cap overruns are step-up
 /// candidates; everything else is a hard deny.
@@ -145,11 +149,19 @@ pub async fn record_action_tx(
 /// daily cap (lazily reset on date rollover, the `account_limits` pattern) —
 /// then bumps `daily_used`. A deny returns `Err`, aborting the transfer's
 /// transaction (the caller records the denial outside it).
+///
+/// `cap_override` (Phase 3): the customer explicitly approved this transfer,
+/// so the two *amount* caps are skipped — every other check (active, scope,
+/// payee) still runs, and the spend is still reserved. When the approved
+/// amount pushes past `daily_cap`, `daily_used` saturates at the cap (the
+/// schema invariant `daily_used <= daily_cap` holds; further transfers that
+/// day step up again).
 pub async fn authorize_and_reserve_transfer(
     tx: &mut Tx<'_>,
     mandate_id: Uuid,
     to_account_id: Uuid,
     amount: Decimal,
+    cap_override: bool,
 ) -> Result<(), AppError> {
     #[allow(clippy::type_complexity)]
     let row: Option<(
@@ -187,7 +199,7 @@ pub async fn authorize_and_reserve_transfer(
         }
     }
     if let Some(max) = max_per_tx {
-        if amount > max {
+        if !cap_override && amount > max {
             return Err(AppError::PolicyDenied(
                 REASON_MAX_PER_TX_EXCEEDED.to_string(),
             ));
@@ -196,19 +208,25 @@ pub async fn authorize_and_reserve_transfer(
     // Day rollover: the reservation below also refreshes last_reset_date.
     let used_today = if stale { Decimal::ZERO } else { daily_used };
     if let Some(cap) = daily_cap {
-        if used_today + amount > cap {
+        if !cap_override && used_today + amount > cap {
             return Err(AppError::PolicyDenied(
                 REASON_DAILY_CAP_EXCEEDED.to_string(),
             ));
         }
     }
 
+    // Without an override the checks above guarantee used + amount <= cap, so
+    // the `.min(cap)` only bites for an approved overage (saturation).
+    let reserved = match daily_cap {
+        Some(cap) => (used_today + amount).min(cap),
+        None => used_today + amount,
+    };
     sqlx::query(
         "UPDATE mandates SET daily_used = $2, last_reset_date = CURRENT_DATE \
          WHERE mandate_id = $1",
     )
     .bind(mandate_id)
-    .bind(used_today + amount)
+    .bind(reserved)
     .execute(&mut **tx)
     .await
     .map_err(AppError::Database)?;

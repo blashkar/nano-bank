@@ -3,6 +3,7 @@ pub mod aft;
 pub mod agent_api;
 pub mod agents;
 pub mod app;
+pub mod approvals;
 pub mod auth;
 pub mod cards;
 pub mod customers;

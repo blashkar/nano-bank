@@ -47,3 +47,8 @@ max_etransfer_amount = "3000"
 min_amount = "10000"
 # How old (minutes) a `sent` wire must be before the admin sweep rejects it.
 stale_minutes = 60
+
+[agent]
+# How long a step-up pending approval (an over-cap agent transfer awaiting the
+# owner's approve/decline) stays actionable before it expires.
+approval_ttl_minutes = 60

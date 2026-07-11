@@ -88,3 +88,33 @@ CREATE INDEX idx_agent_actions_mandate ON agent_actions(mandate_id, created_at);
 -- distinguishable from agent activity above.
 ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'grant_mandate';
 ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'revoke_mandate';
+
+-- Phase 3: step-up approvals. An over-cap agent transfer parks here instead of
+-- hard-failing; the granting customer approves (the transfer executes — the
+-- explicit consent overrides the amount caps for that one transfer; every
+-- other check re-runs) or declines. Unresolved asks expire.
+CREATE TABLE pending_approvals (
+    approval_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mandate_id      UUID NOT NULL REFERENCES mandates(mandate_id),
+    agent_id        UUID NOT NULL REFERENCES agents(agent_id),
+    customer_id     UUID NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+    account_id      UUID NOT NULL REFERENCES accounts(account_id),
+    to_account_id   UUID NOT NULL,
+    amount          DECIMAL(15,2) NOT NULL CHECK (amount > 0),
+    description     TEXT NOT NULL,
+    idempotency_key VARCHAR(128) NOT NULL,
+    -- Which cap tripped: 'MAX_PER_TX_EXCEEDED' | 'DAILY_CAP_EXCEEDED'
+    reason          TEXT NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'declined', 'expired')),
+    transaction_id  UUID, -- the executed transfer (approved only)
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+    resolved_at     TIMESTAMP WITH TIME ZONE
+);
+
+-- An agent retry of the same request (mandate + idempotency key) maps onto the
+-- same open ask instead of stacking duplicates.
+CREATE UNIQUE INDEX idx_pending_approvals_open_key
+    ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending';
+CREATE INDEX idx_pending_approvals_customer ON pending_approvals(customer_id, created_at);

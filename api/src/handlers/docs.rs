@@ -151,7 +151,24 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/agent/transfers</code><br>
         Agent-initiated transfer out of the mandated account — <code>max_per_tx</code>/<code>daily_cap</code>/<code>allowed_payees</code>
-        enforced and reserved under the mandate row lock; <code>idempotency_key</code> required
+        enforced and reserved under the mandate row lock; <code>idempotency_key</code> required.
+        An over-cap amount returns <code>202</code>: it parks as a pending approval for the owner (step-up)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/agent/approvals/{id}</code><br>
+        Poll a parked transfer's fate (agent token, pinned to its mandate)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/approvals</code><br>
+        The owner's step-up approvals (<code>?status=pending</code> to filter)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/approvals/{id}/approve</code><br>
+        Approve a parked over-cap transfer — executes it (this consent overrides the amount caps for that one transfer)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/approvals/{id}/decline</code><br>
+        Decline a parked transfer
     </div>
 
     <h2>🔒 Security</h2>

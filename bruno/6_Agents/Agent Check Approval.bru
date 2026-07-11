@@ -1,0 +1,26 @@
+meta {
+  name: Agent Check Approval
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agent/approvals/{{approvalId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{agentAccessToken}}
+}
+
+docs {
+  The agent polls the fate of its parked ask (pinned to its mandate — another
+  mandate's approval is a 404). Once the owner approves, the response carries
+  the executed transaction_id; declined/expired are final.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -361,6 +361,9 @@ pub(crate) struct TransferSpec<'a> {
 pub(crate) struct AgentTransferCtx {
     pub agent_id: Uuid,
     pub mandate_id: Uuid,
+    /// Phase 3: the customer explicitly approved this transfer, so the amount
+    /// caps are skipped (everything else — active/scope/payee — still checked).
+    pub cap_override: bool,
 }
 
 /// The transfer core, shared by the customer handler above and the agent
@@ -398,6 +401,7 @@ pub(crate) async fn execute_transfer(
             agent.mandate_id,
             spec.to_account_id,
             amount,
+            agent.cap_override,
         )
         .await?;
     }

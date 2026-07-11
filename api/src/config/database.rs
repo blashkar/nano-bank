@@ -72,7 +72,7 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Self-heal the agentic-banking tables (canonical DDL: 07_agents.sql), so a
+    // Self-heal the agentic-banking tables (canonical DDL: 11_agents.sql), so a
     // DB initialised before the agent plane existed picks them up on next boot.
     // Statements run one at a time: ALTER TYPE ... ADD VALUE can't share a
     // transaction with other statements.
@@ -142,6 +142,31 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
         "ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'revoke_mandate'",
         // Additive: DBs whose mandates table predates the Phase-2 payee allowlist.
         "ALTER TABLE mandates ADD COLUMN IF NOT EXISTS allowed_payees UUID[]",
+        // Phase 3: step-up pending approvals.
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            approval_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            mandate_id      UUID NOT NULL REFERENCES mandates(mandate_id),
+            agent_id        UUID NOT NULL REFERENCES agents(agent_id),
+            customer_id     UUID NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+            account_id      UUID NOT NULL REFERENCES accounts(account_id),
+            to_account_id   UUID NOT NULL,
+            amount          DECIMAL(15,2) NOT NULL CHECK (amount > 0),
+            description     TEXT NOT NULL,
+            idempotency_key VARCHAR(128) NOT NULL,
+            reason          TEXT NOT NULL,
+            status          VARCHAR(20) NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'approved', 'declined', 'expired')),
+            transaction_id  UUID,
+            created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+            resolved_at     TIMESTAMP WITH TIME ZONE
+        )
+        "#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_approvals_open_key \
+         ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending'",
+        "CREATE INDEX IF NOT EXISTS idx_pending_approvals_customer \
+         ON pending_approvals(customer_id, created_at)",
     ] {
         sqlx::query(ddl).execute(pool).await?;
     }
