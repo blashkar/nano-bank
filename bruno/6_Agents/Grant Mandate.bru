@@ -1,0 +1,39 @@
+meta {
+  name: Grant Mandate
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/mandates
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "agent_id": "{{agentId}}",
+    "account_id": "{{chequingId}}",
+    "scopes": ["read:balance", "read:transactions", "transfer:initiate"],
+    "max_per_tx": 200.00,
+    "daily_cap": 500.00,
+    "allowed_payees": ["{{savingsId}}"],
+    "expires_at": "2027-01-01T00:00:00Z"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("mandateId", res.body.mandate_id);
+}
+
+docs {
+  THE CONSENT ACT — authenticated as the account owner (run 2_Customers
+  Create + Login and 5_Transactions Open Chequing + Open Savings first).
+  transfer:initiate requires max_per_tx + daily_cap; allowed_payees
+  optionally pins destinations. A non-owned account returns 404.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

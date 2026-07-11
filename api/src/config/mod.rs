@@ -16,6 +16,8 @@ pub struct Settings {
     pub interac: InteracSettings,
     #[serde(default)]
     pub lynx: LynxSettings,
+    #[serde(default)]
+    pub agent: AgentSettings,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -43,6 +45,10 @@ pub struct JwtSettings {
     pub secret: String,
     pub expires_in: i64,
     pub refresh_expires_in: i64,
+    /// TTL for agent-plane tokens. Deliberately shorter than `expires_in`: an
+    /// agent token is a pointer to a revocable mandate, re-validated on every
+    /// request, so a tight expiry costs the agent only a cheap re-mint.
+    pub agent_expires_in: i64,
     pub issuer: String,
 }
 
@@ -124,6 +130,27 @@ impl Default for LynxSettings {
     }
 }
 
+/// Agent-plane (agentic banking) tunables. Overridable via `config/*.toml` or
+/// the layered env var `NANO_BANK__AGENT__APPROVAL_TTL_MINUTES`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AgentSettings {
+    /// How long a step-up pending approval stays actionable before it expires.
+    #[serde(default = "default_approval_ttl_minutes")]
+    pub approval_ttl_minutes: i64,
+}
+
+fn default_approval_ttl_minutes() -> i64 {
+    60
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            approval_ttl_minutes: default_approval_ttl_minutes(),
+        }
+    }
+}
+
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
@@ -186,6 +213,7 @@ impl Default for Settings {
                 secret: "your-super-secret-jwt-key-change-this-in-production".to_string(),
                 expires_in: 900,            // 15 min (short-lived access token)
                 refresh_expires_in: 604800, // 1 week
+                agent_expires_in: 300,      // 5 min (agent tokens are mandate pointers)
                 issuer: "nano-bank".to_string(),
             },
             security: SecuritySettings {
@@ -202,6 +230,7 @@ impl Default for Settings {
             },
             interac: InteracSettings::default(),
             lynx: LynxSettings::default(),
+            agent: AgentSettings::default(),
         }
     }
 }

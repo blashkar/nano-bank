@@ -23,6 +23,7 @@ SET timezone = 'America/Toronto';
 -- 8. 08_interac.sql - Interac e-Transfer tables (handles, etransfers, notifications)
 -- 9. 09_aft.sql - AFT/EFT batch-rail tables (mandates, batches, entries)
 -- 10. 10_lynx.sql - Lynx RTGS wire-rail tables (wires, messages, recalls)
+-- 11. 11_agents.sql - Agentic banking: agents, mandates, agent action audit
 
 -- To execute all scripts in order:
 -- \i 01_enums.sql
@@ -35,3 +36,4 @@ SET timezone = 'America/Toronto';
 -- \i 08_interac.sql
 -- \i 09_aft.sql
 -- \i 10_lynx.sql
+-- \i 11_agents.sql

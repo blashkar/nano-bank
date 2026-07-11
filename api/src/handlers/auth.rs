@@ -12,16 +12,20 @@ use validator::Validate;
 use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::middleware::auth::AuthenticatedCustomer;
+use crate::models::agent::{AgentCredentialsRequest, AgentMandateSummary, AgentTokenRequest};
 use crate::models::auth::{
     AccessTokenResponse, LoginRequest, LoginResponse, RefreshRequest, ServiceTokenRequest,
 };
-use crate::utils::jwt::{encode_access_token, encode_service_token};
+use crate::policy;
+use crate::utils::jwt::{encode_access_token, encode_agent_token, encode_service_token};
 use crate::utils::password::verify_password;
 
 pub fn auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/service-token", post(issue_service_token))
+        .route("/agent-token", post(issue_agent_token))
+        .route("/agent-mandates", post(list_agent_mandates))
         .route("/refresh", post(refresh_token))
         .route("/logout", post(logout))
 }
@@ -38,9 +42,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// A fresh opaque refresh token (~244 bits from two v4 UUIDs). The plaintext is
+/// A fresh opaque secret (~244 bits from two v4 UUIDs), used for refresh
+/// tokens here and agent secrets in `handlers/agents.rs`. The plaintext is
 /// returned to the client once; only its SHA-256 hash is stored (see callers).
-fn generate_refresh_token() -> String {
+pub(crate) fn generate_opaque_secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
@@ -109,6 +114,154 @@ async fn issue_service_token(
             access_token,
             token_type: "Bearer".to_string(),
             expires_in: state.settings.jwt.expires_in,
+        }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// agent mandate discovery (agent plane)
+// ---------------------------------------------------------------------------
+
+/// List the calling agent's OWN active mandates (client-credentials style).
+///
+/// This is what lets one agent hold several grants — different accounts,
+/// different scopes — behind a single registration: the agent discovers its
+/// mandate set here, then mints a per-mandate pointer token (`/agent-token`)
+/// for whichever account the conversation needs. Revoked/expired mandates
+/// simply stop appearing. Only the agent's own grants are visible (the
+/// customer consented to each one at grant time); credential failures are the
+/// same generic 401 as token issuance.
+async fn list_agent_mandates(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentCredentialsRequest>,
+) -> Result<Json<Vec<AgentMandateSummary>>, AppError> {
+    payload.validate()?;
+
+    // Same single-query credential check as issue_agent_token.
+    let agent_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM agents \
+         WHERE agent_id = $1 AND secret_hash = encode(digest($2, 'sha256'), 'hex')",
+    )
+    .bind(payload.agent_id)
+    .bind(&payload.agent_secret)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    match agent_status.as_deref() {
+        Some("active") => {}
+        Some(_) => return Err(AppError::MandateInactive),
+        None => {
+            return Err(AppError::Authentication(
+                "Invalid agent credentials".to_string(),
+            ))
+        }
+    }
+
+    let mandates = sqlx::query_as::<_, AgentMandateSummary>(
+        "SELECT m.mandate_id, m.account_id, a.account_type::text AS account_type, \
+                right(a.account_number, 4) AS account_last4, m.scopes, m.max_per_tx, \
+                m.daily_cap, \
+                CASE WHEN m.last_reset_date < CURRENT_DATE THEN 0 ELSE m.daily_used END \
+                    AS daily_used, \
+                m.expires_at \
+         FROM mandates m JOIN accounts a ON a.account_id = m.account_id \
+         WHERE m.agent_id = $1 AND m.status = 'active' AND m.expires_at > CURRENT_TIMESTAMP \
+         ORDER BY m.created_at",
+    )
+    .bind(payload.agent_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(Json(mandates))
+}
+
+// ---------------------------------------------------------------------------
+// agent token (agent plane)
+// ---------------------------------------------------------------------------
+
+/// Issue an agent-plane token (client-credentials style): the agent presents
+/// its own secret and names the mandate it wants to act under.
+///
+/// The minted JWT is a short-lived *pointer* (`sub` = agent, `act` = customer,
+/// `mnd` = mandate) — scopes and limits stay in the mandate row, which is
+/// re-read on every request, so revocation needs no blocklist. Credential
+/// failures are a generic 401 (no enumeration, like login); a real-but-dead
+/// grant is 401 `MANDATE_INACTIVE` and is audited as a denied `token:issue`.
+async fn issue_agent_token(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentTokenRequest>,
+) -> Result<(StatusCode, Json<AccessTokenResponse>), AppError> {
+    payload.validate()?;
+
+    // Authenticate the agent: match the SHA-256 of the presented secret in
+    // SQL (the same pgcrypto digest used at registration — one query, the
+    // `user_sessions` lookup pattern). Unknown id and wrong secret are
+    // indistinguishable: the same generic 401.
+    let agent_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM agents \
+         WHERE agent_id = $1 AND secret_hash = encode(digest($2, 'sha256'), 'hex')",
+    )
+    .bind(payload.agent_id)
+    .bind(&payload.agent_secret)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let Some(agent_status) = agent_status else {
+        return Err(AppError::Authentication(
+            "Invalid agent credentials".to_string(),
+        ));
+    };
+
+    // Resolve the named mandate; it must be this agent's. A mandate that isn't
+    // (or doesn't exist) gets the same answer, so agents can't probe ids.
+    let mandate: Option<(Uuid, Uuid, String, bool)> = sqlx::query_as(
+        "SELECT customer_id, account_id, status, expires_at <= CURRENT_TIMESTAMP \
+         FROM mandates WHERE mandate_id = $1 AND agent_id = $2",
+    )
+    .bind(payload.mandate_id)
+    .bind(payload.agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let Some((customer_id, account_id, m_status, expired)) = mandate else {
+        return Err(AppError::MandateInactive);
+    };
+
+    let alive = agent_status == "active" && m_status == "active" && !expired;
+    policy::record_action(
+        &state.pool,
+        payload.mandate_id,
+        payload.agent_id,
+        customer_id,
+        account_id,
+        "token:issue",
+        None,
+        if alive { "allowed" } else { "denied" },
+        (!alive).then_some("MANDATE_INACTIVE"),
+        None,
+    )
+    .await
+    .map_err(AppError::Database)?;
+    if !alive {
+        return Err(AppError::MandateInactive);
+    }
+
+    let access_token = encode_agent_token(
+        payload.agent_id,
+        customer_id,
+        payload.mandate_id,
+        &state.settings.jwt,
+    )?;
+
+    tracing::info!(agent_id = %payload.agent_id, mandate_id = %payload.mandate_id, "🔑 agent token issued");
+
+    Ok((
+        StatusCode::OK,
+        Json(AccessTokenResponse {
+            access_token,
+            token_type: "Bearer".to_string(),
+            expires_in: state.settings.jwt.agent_expires_in,
         }),
     ))
 }
@@ -200,7 +353,7 @@ async fn login(
         .execute(&state.pool)
         .await;
 
-    let refresh_token = generate_refresh_token();
+    let refresh_token = generate_opaque_secret();
     let session_id: Uuid = sqlx::query_scalar(
         "INSERT INTO user_sessions (customer_id, session_token, ip_address, user_agent, expires_at)
          VALUES ($1, encode(digest($2, 'sha256'), 'hex'), $3::inet, $4,
@@ -274,7 +427,7 @@ async fn refresh_token(
         return Err(AppError::SessionExpired);
     }
 
-    let new_refresh = generate_refresh_token();
+    let new_refresh = generate_opaque_secret();
     sqlx::query(
         "UPDATE user_sessions
          SET session_token = encode(digest($1, 'sha256'), 'hex'),

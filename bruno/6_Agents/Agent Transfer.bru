@@ -1,0 +1,38 @@
+meta {
+  name: Agent Transfer
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/v1/agent/transfers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{agentAccessToken}}
+}
+
+body:json {
+  {
+    "to_account_id": "{{savingsId}}",
+    "amount": 150.00,
+    "description": "agent-initiated payment",
+    "idempotency_key": "bruno-agent-pay-001"
+  }
+}
+
+docs {
+  Agent moves money OUT of the mandated account (no from field — the mandate
+  pins it). idempotency_key is REQUIRED: re-sending this exact request returns
+  the same transaction (200), never a double spend. The mandate's caps are
+  enforced + reserved under the row lock: try amount 250 → 403 POLICY_DENIED
+  (MAX_PER_TX_EXCEEDED, audited as step_up_required); a destination outside
+  allowed_payees → PAYEE_NOT_ALLOWED. A flat $1.50 fee applies.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

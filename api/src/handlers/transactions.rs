@@ -305,6 +305,8 @@ async fn transfer_money(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
+    // Reject malformed requests BEFORE the replay check, so a bad request with
+    // a previously-used key is a 400, not a misleading 200 replay.
     if req.from_account_id == req.to_account_id {
         return Err(AppError::BadRequest(
             "from and to accounts must differ".to_string(),
@@ -316,10 +318,71 @@ async fn transfer_money(
     // (Best-effort — no unique index, so tightly-concurrent duplicates with the
     // same key could still both post; acceptable for this toy.)
     if let Some(key) = req.idempotency_key.as_deref() {
-        if let Some(existing) = find_by_idempotency_key(&state.pool, key, auth.customer_id).await? {
+        if let Some(existing) =
+            find_by_idempotency_key(&state.pool, key, auth.customer_id, None).await?
+        {
             let resp = load_transaction_response(&state.pool, existing).await?;
             return Ok((StatusCode::OK, Json(resp)));
         }
+    }
+
+    let resp = execute_transfer(
+        &state,
+        auth.customer_id,
+        TransferSpec {
+            from_account_id: req.from_account_id,
+            to_account_id: req.to_account_id,
+            amount,
+            description: &req.description,
+            external_reference: req.reference.as_deref(),
+            idempotency_key: req.idempotency_key.as_deref(),
+            agent: None,
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// A transfer to execute, independent of who asked for it.
+pub(crate) struct TransferSpec<'a> {
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    /// Pre-normalized (see `normalize_amount`).
+    pub amount: Decimal,
+    pub description: &'a str,
+    pub external_reference: Option<&'a str>,
+    pub idempotency_key: Option<&'a str>,
+    /// `Some` for agent-initiated transfers: reserves the mandate's spend caps
+    /// under the row lock and tags agency on the money trail.
+    pub agent: Option<AgentTransferCtx>,
+}
+
+/// Agency context for a mandate-authorized transfer.
+pub(crate) struct AgentTransferCtx {
+    pub agent_id: Uuid,
+    pub mandate_id: Uuid,
+    /// Phase 3: the customer explicitly approved this transfer, so the amount
+    /// caps are skipped (everything else — active/scope/payee — still checked).
+    pub cap_override: bool,
+}
+
+/// The transfer core, shared by the customer handler above and the agent
+/// surface (`handlers/agent_api.rs`). `customer_id` is the acting owner of the
+/// funding account: the caller's own id for customer transfers, the mandate's
+/// grantor for agent transfers. Enforces ownership, operability, funds
+/// (amount + fee), and the account's transfer limits; charges the flat fee;
+/// honors the caller's idempotency key in the metadata.
+pub(crate) async fn execute_transfer(
+    state: &AppState,
+    customer_id: Uuid,
+    spec: TransferSpec<'_>,
+) -> Result<TransactionResponse, AppError> {
+    let amount = spec.amount;
+
+    if spec.from_account_id == spec.to_account_id {
+        return Err(AppError::BadRequest(
+            "from and to accounts must differ".to_string(),
+        ));
     }
 
     let fee = transfer_fee();
@@ -327,25 +390,41 @@ async fn transfer_money(
 
     let mut tx = state.pool.begin().await?;
 
+    // Agent transfers: authorize + reserve the mandate's caps FIRST, under the
+    // mandate row lock — the global rule is mandate before accounts (only the
+    // agent path locks mandates, so no cycle with other paths). A deny aborts
+    // here; the caller records it. Caps meter the transfer *amount* only — the
+    // flat fee is a bank charge, not agent spend.
+    if let Some(agent) = &spec.agent {
+        crate::policy::authorize_and_reserve_transfer(
+            &mut tx,
+            agent.mandate_id,
+            spec.to_account_id,
+            amount,
+            agent.cap_override,
+        )
+        .await?;
+    }
+
     // Lock both customer accounts (id-sorted) and the fee counterparty
     // (EXTERNAL_CASH) last — see [`lock_accounts_cash_last`].
     let locked = lock_accounts_cash_last(
         &mut tx,
-        &[req.from_account_id, req.to_account_id, cash_id],
+        &[spec.from_account_id, spec.to_account_id, cash_id],
         cash_id,
     )
     .await?;
     let from = locked
-        .get(&req.from_account_id)
+        .get(&spec.from_account_id)
         .ok_or_else(|| AppError::NotFound("from account not found".to_string()))?;
     let to = locked
-        .get(&req.to_account_id)
+        .get(&spec.to_account_id)
         .ok_or_else(|| AppError::NotFound("to account not found".to_string()))?;
 
     // Ownership: the caller may only move money out of their own account. The
     // destination can belong to anyone. 404 (not 403) so a non-owned `from`
     // account is indistinguishable from a missing one.
-    if from.customer_id != auth.customer_id {
+    if from.customer_id != customer_id {
         return Err(AppError::NotFound("from account not found".to_string()));
     }
 
@@ -367,18 +446,23 @@ async fn transfer_money(
     }
 
     let reference = reference_number("TXF");
-    let metadata = match req.idempotency_key.as_deref() {
+    let mut metadata = match spec.idempotency_key {
         Some(key) => json!({ "idempotency_key": key }),
         None => json!({}),
     };
+    // Agency visible on the money trail: who moved it, under which consent.
+    if let Some(agent) = &spec.agent {
+        metadata["agent_id"] = json!(agent.agent_id);
+        metadata["mandate_id"] = json!(agent.mandate_id);
+    }
     let txn_id = insert_transaction(
         &mut tx,
         &reference,
         "transfer",
         amount,
-        &req.description,
+        spec.description,
         from.customer_id,
-        req.reference.as_deref(),
+        spec.external_reference,
         metadata,
     )
     .await?;
@@ -456,14 +540,30 @@ async fn transfer_money(
     .execute(&mut *tx)
     .await?;
 
+    // The *allowed* agent decision commits atomically with the movement.
+    if let Some(agent) = &spec.agent {
+        crate::policy::record_action_tx(
+            &mut tx,
+            agent.mandate_id,
+            agent.agent_id,
+            from.customer_id,
+            from.account_id,
+            "transfer",
+            Some(amount),
+            "allowed",
+            None,
+            Some(txn_id),
+        )
+        .await?;
+    }
+
     tx.commit().await?;
 
     tracing::info!(
         from = %from.account_id, to = %to.account_id, transaction_id = %txn_id, amount = %amount,
         "🔁 transfer posted"
     );
-    let resp = load_transaction_response(&state.pool, txn_id).await?;
-    Ok((StatusCode::CREATED, Json(resp)))
+    load_transaction_response(&state.pool, txn_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +763,17 @@ async fn get_transactions(
     auth: AuthenticatedCustomer,
     Query(q): Query<TransactionHistoryQuery>,
 ) -> Result<Json<TransactionHistoryResponse>, AppError> {
+    fetch_history(&state, auth.customer_id, q).await.map(Json)
+}
+
+/// The history query itself, shared by the customer handler above and the
+/// agent surface (`handlers/agent_api.rs`, which pins `q.account_id` to the
+/// mandate's account). Always scoped to `customer_id`'s own accounts.
+pub(crate) async fn fetch_history(
+    state: &AppState,
+    customer_id: Uuid,
+    q: TransactionHistoryQuery,
+) -> Result<TransactionHistoryResponse, AppError> {
     let limit = q.limit.unwrap_or(DEFAULT_HISTORY_LIMIT).clamp(1, 100);
     let offset = q.offset.unwrap_or(0);
 
@@ -672,7 +783,7 @@ async fn get_transactions(
     let count_base = "SELECT COUNT(DISTINCT t.transaction_id) FROM transactions t \
          JOIN transaction_entries e ON e.transaction_id = t.transaction_id";
     let mut count_qb = QueryBuilder::<Postgres>::new(count_base);
-    push_filters(&mut count_qb, &q, auth.customer_id);
+    push_filters(&mut count_qb, &q, customer_id);
     let total: i64 = count_qb
         .build_query_scalar()
         .fetch_one(&state.pool)
@@ -685,7 +796,7 @@ async fn get_transactions(
          JOIN transaction_entries e ON e.transaction_id = t.transaction_id"
     );
     let mut page_qb = QueryBuilder::<Postgres>::new(page_base);
-    push_filters(&mut page_qb, &q, auth.customer_id);
+    push_filters(&mut page_qb, &q, customer_id);
     page_qb.push(" ORDER BY t.created_at DESC LIMIT ");
     page_qb.push_bind(limit as i64);
     page_qb.push(" OFFSET ");
@@ -717,7 +828,7 @@ async fn get_transactions(
 
     let returned = transactions.len() as i64;
     let has_more = offset as i64 + returned < total;
-    Ok(Json(TransactionHistoryResponse {
+    Ok(TransactionHistoryResponse {
         transactions,
         total_count: total.max(0) as u64,
         has_more,
@@ -726,7 +837,7 @@ async fn get_transactions(
         } else {
             None
         },
-    }))
+    })
 }
 
 fn push_filters(
@@ -1052,24 +1163,33 @@ async fn record_summary(
     Ok(())
 }
 
-async fn find_by_idempotency_key(
+/// Find a prior transfer for an idempotency key. Keys live in per-actor
+/// namespaces: customer replays match the customer's own transfers with **no**
+/// mandate tag, agent replays (`mandate_id = Some`) match only transfers made
+/// under that same mandate — so a key can never surface another plane's (or
+/// another account's) transaction through the agent surface.
+pub(crate) async fn find_by_idempotency_key(
     pool: &DatabasePool,
     key: &str,
     customer_id: Uuid,
+    mandate_id: Option<Uuid>,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT transaction_id FROM transactions \
          WHERE transaction_type = 'transfer' AND initiated_by = $2 \
-         AND metadata->>'idempotency_key' = $1 LIMIT 1",
+         AND metadata->>'idempotency_key' = $1 \
+         AND metadata->>'mandate_id' IS NOT DISTINCT FROM $3 \
+         LIMIT 1",
     )
     .bind(key)
     .bind(customer_id)
+    .bind(mandate_id.map(|m| m.to_string()))
     .fetch_optional(pool)
     .await
 }
 
 /// Load a full `TransactionResponse` (with entries) for one transaction.
-async fn load_transaction_response(
+pub(crate) async fn load_transaction_response(
     pool: &DatabasePool,
     txn_id: Uuid,
 ) -> Result<TransactionResponse, AppError> {

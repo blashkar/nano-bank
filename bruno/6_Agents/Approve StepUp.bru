@@ -1,0 +1,25 @@
+meta {
+  name: Approve StepUp
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/v1/approvals/{{approvalId}}/approve
+  body: none
+  auth: inherit
+}
+
+docs {
+  CUSTOMER plane (owner token — an agent token is rejected here: the agent can
+  never approve its own ask). Approve executes the parked transfer; this
+  explicit consent overrides the amount caps for that ONE transfer
+  (scope/payee/funds still re-checked, spend still reserved). Use
+  .../decline to kill it instead; GET /api/v1/approvals?status=pending lists
+  the queue. A second approve is a 409; an expired ask is a 409.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -33,6 +33,10 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
         Mint a network-plane service token (client-credentials) — used by the card network for <code>/cards/*</code>
     </div>
     <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/auth/agent-token</code><br>
+        Mint an agent-plane token (client-credentials + mandate id) — a short-lived pointer to a revocable mandate
+    </div>
+    <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/auth/refresh</code><br>
         Exchange a refresh token for a new access token (refresh token is rotated)
     </div>
@@ -101,6 +105,70 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/transactions/{id}/reverse</code><br>
         Reverse a completed transaction
+    </div>
+
+    <h2>🤖 Agentic Banking</h2>
+    <p>Scoped, limited, revocable AI-agent access. A <em>mandate</em> is the consent record
+    binding (customer, agent, account, scopes, limits, expiry); agent tokens are pointers to it,
+    so revoking the mandate kills every outstanding token on its next use. Every policy decision
+    — allow and deny — is audited. <strong>Prefer the built-in consent UI at
+    <a href="/app"><code>/app</code></a></strong> for registration, granting, revocation, and
+    the per-mandate activity view.</p>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/agents</code><br>
+        Register an agent (open; confers zero access — the secret is returned exactly once)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/agents/{id}</code><br>
+        Public agent metadata (inspect before mandating)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/mandates</code><br>
+        Grant a mandate — the consent act (customer token; scopes: <code>read:balance</code>,
+        <code>read:transactions</code>, <code>transfer:initiate</code> — the latter requires
+        <code>max_per_tx</code> + <code>daily_cap</code>, optionally <code>allowed_payees</code>)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/mandates</code><br>
+        List your mandates (all statuses)
+    </div>
+    <div class="endpoint">
+        <span class="method delete">DELETE</span> <code>/api/v1/mandates/{id}</code><br>
+        Revoke a mandate — takes effect on the agent's next request
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/mandates/{id}/actions</code><br>
+        The owner's view of the mandate's audit trail — every decision, including denials
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/agent/account</code><br>
+        Balance snapshot of the mandated account (agent token; no account parameter — the mandate pins it)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/agent/transactions</code><br>
+        History of the mandated account (agent token)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/agent/transfers</code><br>
+        Agent-initiated transfer out of the mandated account — <code>max_per_tx</code>/<code>daily_cap</code>/<code>allowed_payees</code>
+        enforced and reserved under the mandate row lock; <code>idempotency_key</code> required.
+        An over-cap amount returns <code>202</code>: it parks as a pending approval for the owner (step-up)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/agent/approvals/{id}</code><br>
+        Poll a parked transfer's fate (agent token, pinned to its mandate)
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/approvals</code><br>
+        The owner's step-up approvals (<code>?status=pending</code> to filter)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/approvals/{id}/approve</code><br>
+        Approve a parked over-cap transfer — executes it (this consent overrides the amount caps for that one transfer)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/approvals/{id}/decline</code><br>
+        Decline a parked transfer
     </div>
 
     <h2>🔒 Security</h2>
