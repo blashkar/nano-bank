@@ -8,13 +8,15 @@ Creates (against a running nano-bank stack):
   1. a demo customer + login (the "account owner"),
   2. a chequing account, funded with a $750 deposit and a $50 withdrawal so
      history is interesting (skipped with a warning if the GL core is down),
-     plus a savings account as the approved payee,
+     plus TWO savings accounts — the first is the approved payee, the second
+     exists to demo label ambiguity ("savings" alone matches both → the agent
+     disambiguates by last-4, never needing a full account number),
   3. a registered agent named "Claude" (secret captured — shown once!),
-  4. TWO differently-scoped mandates for that ONE agent (the real-life shape):
+  4. THREE differently-scoped mandates for that ONE agent (the real-life shape):
      - chequing: read + transfer:initiate (max_per_tx $200, daily_cap $500,
-       payee pinned to savings),
-     - savings: READ-ONLY.
-     Both 7-day expiry; the MCP server discovers them live.
+       payee pinned to savings #1),
+     - savings #1 and #2: READ-ONLY.
+     All 7-day expiry; the MCP server discovers them live.
 
 Writes mcp/.env.demo (gitignored — contains live secrets) and prints the
 `claude mcp add` command, demo prompts, and the ready-made revoke curl.
@@ -71,25 +73,33 @@ def main() -> None:
     auth = {"Authorization": f"Bearer {token}"}
     print(f"✓ customer {email}")
 
-    # 2. Funded chequing account + a savings account as the approved payee
+    # 2. Funded chequing account + TWO savings accounts (the first is the
+    #    approved payee; the second makes a bare "savings" ambiguous, so the
+    #    demo can show last-4 disambiguation).
     r = c.post("/api/v1/accounts", headers=auth, json={"account_type": "chequing"})
     r.status_code in (200, 201) or die(f"create account: {r.status_code} {r.text}")
     account_id = r.json()["account_id"]
     r = c.post("/api/v1/accounts", headers=auth, json={"account_type": "savings"})
     r.status_code in (200, 201) or die(f"create payee account: {r.status_code} {r.text}")
     payee_id = r.json()["account_id"]
+    r = c.post("/api/v1/accounts", headers=auth, json={"account_type": "savings"})
+    r.status_code in (200, 201) or die(f"create second savings: {r.status_code} {r.text}")
+    savings2_id = r.json()["account_id"]
     funded = True
     for path, body in [
         ("deposit", {"account_id": account_id, "amount": 750.00, "description": "Payday deposit"}),
         ("withdrawal", {"account_id": account_id, "amount": 50.00, "description": "Coffee money"}),
+        ("deposit", {"account_id": savings2_id, "amount": 120.00, "description": "Vacation fund"}),
     ]:
         r = c.post(f"/api/v1/transactions/{path}", headers=auth, json=body)
         if r.status_code == 503:
-            print("⚠ GL core unavailable — continuing with an unfunded ($0) account")
+            print("⚠ GL core unavailable — continuing with unfunded ($0) accounts")
             funded = False
             break
         r.status_code in (200, 201) or die(f"{path}: {r.status_code} {r.text}")
     print(f"✓ chequing account {account_id}" + (" — balance $700.00" if funded else ""))
+    print(f"✓ savings accounts {payee_id} (payee)")
+    print(f"                   {savings2_id}" + (" — balance $120.00" if funded else ""))
 
     # 3. Register the agent (the secret is returned exactly once — captured here)
     r = c.post(
@@ -104,7 +114,7 @@ def main() -> None:
     agent_id, agent_secret = agent["agent_id"], agent["agent_secret"]
     print(f"✓ agent 'Claude' registered: {agent_id}")
 
-    # 4. The consent acts: TWO differently-scoped mandates for ONE agent.
+    # 4. The consent acts: THREE differently-scoped mandates for ONE agent.
     expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=7)).isoformat()
     r = c.post(
         "/api/v1/mandates",
@@ -137,7 +147,20 @@ def main() -> None:
     )
     r.status_code == 201 or die(f"grant savings mandate: {r.status_code} {r.text}")
     savings_mandate_id = r.json()["mandate_id"]
-    print(f"✓ savings mandate:  {savings_mandate_id} (READ-ONLY)")
+    print(f"✓ savings #1 mandate: {savings_mandate_id} (READ-ONLY)")
+    r = c.post(
+        "/api/v1/mandates",
+        headers=auth,
+        json={
+            "agent_id": agent_id,
+            "account_id": savings2_id,
+            "scopes": ["read:balance", "read:transactions"],
+            "expires_at": expires,
+        },
+    )
+    r.status_code == 201 or die(f"grant second savings mandate: {r.status_code} {r.text}")
+    savings2_mandate_id = r.json()["mandate_id"]
+    print(f"✓ savings #2 mandate: {savings2_mandate_id} (READ-ONLY)")
 
     # 5. Persist demo state (contains live secrets — gitignored)
     env_file = HERE / ".env.demo"
@@ -150,10 +173,12 @@ NANO_BANK_AGENT_SECRET={agent_secret}
 # owner-side (for the revoke step of the demo):
 DEMO_CHEQUING_MANDATE_ID={mandate_id}
 DEMO_SAVINGS_MANDATE_ID={savings_mandate_id}
+DEMO_SAVINGS2_MANDATE_ID={savings2_mandate_id}
 DEMO_CUSTOMER_EMAIL={email}
 DEMO_CUSTOMER_TOKEN={token}
 DEMO_ACCOUNT_ID={account_id}
 DEMO_PAYEE_ACCOUNT_ID={payee_id}
+DEMO_SAVINGS2_ACCOUNT_ID={savings2_id}
 """
     )
     print(f"✓ wrote {env_file}")
@@ -180,9 +205,12 @@ NEXT STEPS
 
    {add_cmd}
 
-2. Start a Claude Code session and try (ONE registration, BOTH accounts):
-   • "What access do you have to my bank?"       → lists both mandates + scopes
-   • "What's my chequing balance? And savings?"  → reads under each mandate
+2. Start a Claude Code session and try (ONE registration, ALL THREE accounts):
+   • "What access do you have to my bank?"       → lists all three mandates + scopes
+   • "What's my savings balance?" → TWO savings are mandated: the tool returns
+     ACCOUNT_AMBIGUOUS with both labels (savings-XXXX) and Claude asks which —
+     or answers for both. Reply with just the last-4; a full number is never needed.
+   • "What's my chequing balance?"               → unique, resolves directly
    • "Move $150 from chequing into my savings ({payee_id})."
    • "Now move $250 more." → POLICY_DENIED (over the $200 per-transaction cap)
    • "Transfer $20 FROM my savings." → POLICY_DENIED SCOPE_MISSING (read-only!)

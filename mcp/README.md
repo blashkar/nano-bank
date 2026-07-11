@@ -26,8 +26,8 @@ request, so revocation takes effect on the very next tool call.
 ## Run the demo
 
 ```bash
-# 1. Seed: customer + funded chequing + savings + agent "Claude" holding TWO
-#    differently-scoped mandates (chequing: reads+capped transfers; savings: read-only).
+# 1. Seed: customer + funded chequing + TWO savings + agent "Claude" holding THREE
+#    differently-scoped mandates (chequing: reads+capped transfers; both savings: read-only).
 #    Writes mcp/.env.demo (secrets, gitignored) and prints everything below.
 uv run mcp/setup_demo.py
 
@@ -38,9 +38,12 @@ claude mcp add nano-bank-agent \
   --env NANO_BANK_AGENT_ID=... --env NANO_BANK_AGENT_SECRET=... \
   -- uv run /abs/path/to/nano-bank/mcp/nano_bank_agent_mcp.py
 
-# 3. In a new Claude Code session, ask (one registration, both accounts):
-#    • "What access do you have to my bank?"      → both mandates, scopes, caps
-#    • "What's my chequing balance? And savings?" → reads under each mandate
+# 3. In a new Claude Code session, ask (one registration, all three accounts):
+#    • "What access do you have to my bank?"      → all mandates, scopes, caps
+#    • "What's my savings balance?"   → ambiguous (two savings!): the tool returns
+#      ACCOUNT_AMBIGUOUS + both labels; answer with the last-4 ("the one ending 1234")
+#      — a full account number is never needed for a mandated account
+#    • "What's my chequing balance?"  → unique, resolves directly
 #    • "Move $150 from chequing into my savings (<payee id from the seed output>)."
 #    • "Now move $250 more."          → denied: over the $200 per-transaction cap
 #    • "Transfer $20 FROM my savings" → denied: SCOPE_MISSING (savings is read-only)
