@@ -5,11 +5,11 @@ real REST API to show a flow end to end. Distinct from `testing/` (the automated
 harness + payment-network simulators): these are for *showing* the bank, one demo
 per subdirectory.
 
-| Demo | Dir | What it shows |
-|------|-----|---------------|
-| Onboarding | `onboarding/` | Create a customer → open accounts → post deposit/withdrawal/transfer, over the consumer API (identity from the customer JWT). |
+| # | Demo | Dir | What it shows |
+|---|------|-----|---------------|
+| 1 | Onboarding | `01-onboarding/` | Create a customer → open accounts → post deposit/withdrawal/transfer, over the consumer API (identity from the customer JWT). |
 
-_More demos ahead (each gets its own `demos/<name>/`)._
+_More demos ahead (each gets its own numbered `demos/NN-<name>/`)._
 
 ## Running a demo
 
@@ -24,8 +24,8 @@ Then run the demo (point `DEMO_API_BASE` elsewhere if your API is not on
 `localhost:8081`):
 
 ```bash
-pip install -r demos/onboarding/requirements.txt
-DEMO_API_BASE=http://localhost:8081 streamlit run demos/onboarding/app.py
+pip install -r demos/01-onboarding/requirements.txt
+DEMO_API_BASE=http://localhost:8081 streamlit run demos/01-onboarding/app.py
 ```
 
 (If you run the bank as a host `cargo run`, it's already on `http://localhost:8081`
