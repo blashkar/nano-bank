@@ -18,7 +18,7 @@ LLM_TOOL_NAMES = frozenset({
     "get_profile", "get_accounts", "get_transactions", "get_cards",
     "recall", "remember", "propose_transfer", "propose_deposit", "propose_withdraw",
     "register_interac_recipient", "list_interac_recipients",
-    "remove_interac_recipient", "propose_interac_transfer"})
+    "remove_interac_recipient", "propose_interac_transfer", "open_account"})
 CONFIRM_ONLY_TOOL_NAMES = frozenset({"execute_action", "cancel_action"})
 
 
@@ -135,6 +135,13 @@ def build_mcp(deps: Deps) -> FastMCP:
     def propose_withdraw(from_account: str, amount: str) -> dict:
         """Propose a withdrawal from one of the client's accounts. Requires confirmation."""
         return _propose("withdraw", amount=amount, from_account=from_account)
+
+    @mcp.tool()
+    def open_account(account_type: str) -> dict:
+        """Open a new account for the bound client. account_type is one of
+        'chequing', 'savings', 'credit_card'. Opening an account is immediate
+        (not money movement)."""
+        return deps.bank.create_account(current_token(), {"account_type": account_type})
 
     @mcp.tool()
     def register_interac_recipient(email: str, name: str) -> dict:

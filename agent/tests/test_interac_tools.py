@@ -11,3 +11,8 @@ def test_deps_has_bank_field():
     from agent.mcp_server import Deps
     fields = {f.name for f in dataclasses.fields(Deps)}
     assert "bank" in fields
+
+
+def test_open_account_tool_registered():
+    from agent.mcp_server import LLM_TOOL_NAMES
+    assert "open_account" in LLM_TOOL_NAMES
