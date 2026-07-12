@@ -73,7 +73,7 @@ async def _default_confirm(settings, customer_id, token, action_id, cancel=False
 
 def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
                confirm_fn=_default_confirm, token_resolver: Optional[TokenResolver] = None,
-               seed_fn=None) -> FastAPI:
+               seed_fn=None, mandate_client=None, mandate_pep=None) -> FastAPI:
     app = FastAPI(title="nano-bank personal manager")
 
     def _auth(authorization: Optional[str]):
@@ -124,6 +124,75 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
     async def cancel(cid: str, aid: str, authorization: str = Header(None)):
         _auth(authorization)
         return await confirm_fn(settings, cid, _token(cid), aid, cancel=True)
+
+    # --- external mandated-agent gateway: the ONLY door for the external agent ---
+    from .mandate_gateway import MandateClient, MandatePEP
+    _mc = mandate_client or MandateClient(
+        settings.nano_bank_api, settings.nano_agent_id, settings.nano_agent_secret)
+    _pep = mandate_pep or MandatePEP(_mc)
+
+    def _gw_auth(authorization: Optional[str]):
+        expected = f"Bearer {settings.agent_gateway_token}"
+        if not settings.agent_gateway_token or authorization != expected:
+            raise HTTPException(401, "invalid agent gateway token")
+
+    _OP_SCOPE = {"transfer_out": "transfer:initiate", "open_account": "account:open",
+                 "register_payee": "payee:register"}
+
+    @app.get("/agent-gateway/mandate")
+    def gw_mandate(authorization: str = Header(None)):
+        _gw_auth(authorization)
+        live = _mc.list_mandates()
+        m = next((x for x in live if x.get("mandate_id") == settings.agent_mandate_id), None)
+        if not m:
+            raise HTTPException(404, "no active mandate")
+        return m
+
+    @app.post("/agent-gateway/act")
+    def gw_act(body: dict, authorization: str = Header(None)):
+        _gw_auth(authorization)
+        op = (body or {}).get("operation")
+        p = (body or {}).get("params") or {}
+        scope = _OP_SCOPE.get(op)
+        if scope is None:
+            raise HTTPException(400, f"unknown operation {op!r}")
+        amount = p.get("amount") if op == "transfer_out" else None
+        d = _pep.check(settings.agent_mandate_id, scope, amount=amount)
+        if not d.allowed:
+            return {"decision": "deny", "operation": op, "reason": d.reason}
+        cid = settings.agent_customer_id
+        if op == "transfer_out":
+            import uuid as _u
+            to_acct = p.get("to_account_id") or settings.agent_biller_account_id
+            tok = _mc.mint_token(settings.agent_mandate_id)
+            code, res = _mc.agent_transfer(tok, to_acct, p["amount"],
+                                           p.get("description", "Epcor utilities bill"),
+                                           _u.uuid4().hex)
+            return {"decision": "allow", "operation": op, "http": code, "result": res}
+        from .bank import BankClient
+        bank = BankClient(settings.nano_bank_api)
+        ctok = _token(cid)
+        if op == "open_account":
+            return {"decision": "allow", "operation": op,
+                    "result": bank.create_account(ctok, {"account_type": p["account_type"]})}
+        return {"decision": "allow", "operation": op,
+                "result": bank.register_recipient(ctok, p["email"], p["name"])}
+
+    @app.post("/agent-gateway/message")
+    async def gw_message(body: dict, authorization: str = Header(None)):
+        _gw_auth(authorization)
+        d = _pep.check(settings.agent_mandate_id, "read:balance")
+        if not d.allowed:
+            return {"answer": f"(denied) {d.reason}", "trace": []}
+        return await assist_fn(settings, settings.agent_customer_id,
+                               _token(settings.agent_customer_id),
+                               (body or {}).get("message", ""), None)
+
+    @app.post("/agent-gateway/revoke")
+    def gw_revoke(authorization: str = Header(None)):
+        _gw_auth(authorization)
+        _mc.revoke(_token(settings.agent_customer_id), settings.agent_mandate_id)
+        return {"revoked": True}
 
     if seed_fn is not None:
         @app.post("/branch/seed")

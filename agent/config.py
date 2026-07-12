@@ -20,6 +20,13 @@ class Settings:
     mcp_url: str
     branch_port: int
     console_port: int
+    # External mandated-agent gateway (the branch holds the agent creds)
+    nano_agent_id: str
+    nano_agent_secret: str
+    agent_gateway_token: str
+    agent_mandate_id: str
+    agent_customer_id: str
+    agent_biller_account_id: str   # "Epcor Utilities" — the bill-payment destination
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -48,4 +55,10 @@ class Settings:
             mcp_url=g("MCP_URL", "http://localhost:8087/mcp"),
             branch_port=int(g("BRANCH_PORT", "8086")),
             console_port=int(g("CONSOLE_PORT", "8505")),
+            nano_agent_id=g("NANO_AGENT_ID"),
+            nano_agent_secret=g("NANO_AGENT_SECRET"),
+            agent_gateway_token=g("AGENT_GATEWAY_TOKEN"),
+            agent_mandate_id=g("AGENT_MANDATE_ID"),
+            agent_customer_id=g("AGENT_CUSTOMER_ID"),
+            agent_biller_account_id=g("AGENT_BILLER_ACCOUNT_ID"),
         )
