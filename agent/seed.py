@@ -37,6 +37,36 @@ def fund(bank, token, account_id, amount) -> dict:
     return bank.deposit(token, account_id, str(amount))
 
 
+def _seed_epcor_biller(bank) -> str:
+    """A stable 'Epcor Utilities' biller: a synthetic customer + active chequing
+    account, the destination for the agent's mandate-capped bill payment."""
+    tag = uuid.uuid4().hex[:8]
+    email, pw = f"epcor.{tag}@biller.nano", "Biller!" + tag
+    bank.create_customer({
+        "first_name": "Epcor", "last_name": "Utilities", "email": email,
+        "phone_number": f"+1555{uuid.uuid4().int % 10_000_000:07d}",
+        "date_of_birth": "1990-01-01", "password": pw})
+    tok = bank.login(email, pw)
+    return bank.create_account(tok, {"account_type": "chequing"})["account_id"]
+
+
+def seed_agent_mandate(bank, customer_token, account_id) -> dict:
+    """Register an external agent and grant it a mandate on `account_id`, plus an
+    Epcor biller account as the bill-payment destination."""
+    from datetime import datetime, timedelta, timezone
+    from .mandate_gateway import MandateClient
+    mc = MandateClient(bank.base, "", "")
+    agent = mc.register_agent("Demo External Agent")
+    mandate = mc.create_mandate(customer_token, {
+        "agent_id": agent["agent_id"], "account_id": account_id,
+        "scopes": ["read:balance", "read:transactions", "transfer:initiate",
+                   "account:open", "payee:register"],
+        "max_per_tx": "100", "daily_cap": "500",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()})
+    return {"agent_id": agent["agent_id"], "agent_secret": agent["agent_secret"],
+            "mandate_id": mandate["mandate_id"], "epcor_account_id": _seed_epcor_biller(bank)}
+
+
 def seed_demo(bank) -> dict:
     store = CredStore()
     customers = []

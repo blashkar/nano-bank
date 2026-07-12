@@ -127,9 +127,18 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
 
     # --- external mandated-agent gateway: the ONLY door for the external agent ---
     from .mandate_gateway import MandateClient, MandatePEP
-    _mc = mandate_client or MandateClient(
-        settings.nano_bank_api, settings.nano_agent_id, settings.nano_agent_secret)
-    _pep = mandate_pep or MandatePEP(_mc)
+    # Mutable binding: starts from settings, rebindable at runtime by demo-seed
+    # (so the demo works without redeploying the branch with new agent creds).
+    _gw = {"agent_id": settings.nano_agent_id, "agent_secret": settings.nano_agent_secret,
+           "mandate_id": settings.agent_mandate_id, "customer_id": settings.agent_customer_id,
+           "biller": settings.agent_biller_account_id}
+
+    def _mkclient():
+        return mandate_client or MandateClient(
+            settings.nano_bank_api, _gw["agent_id"], _gw["agent_secret"])
+
+    def _mkpep(client):
+        return mandate_pep or MandatePEP(client)
 
     def _gw_auth(authorization: Optional[str]):
         expected = f"Bearer {settings.agent_gateway_token}"
@@ -142,8 +151,8 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
     @app.get("/agent-gateway/mandate")
     def gw_mandate(authorization: str = Header(None)):
         _gw_auth(authorization)
-        live = _mc.list_mandates()
-        m = next((x for x in live if x.get("mandate_id") == settings.agent_mandate_id), None)
+        live = _mkclient().list_mandates()
+        m = next((x for x in live if x.get("mandate_id") == _gw["mandate_id"]), None)
         if not m:
             raise HTTPException(404, "no active mandate")
         return m
@@ -156,22 +165,22 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
         scope = _OP_SCOPE.get(op)
         if scope is None:
             raise HTTPException(400, f"unknown operation {op!r}")
+        client = _mkclient()
         amount = p.get("amount") if op == "transfer_out" else None
-        d = _pep.check(settings.agent_mandate_id, scope, amount=amount)
+        d = _mkpep(client).check(_gw["mandate_id"], scope, amount=amount)
         if not d.allowed:
             return {"decision": "deny", "operation": op, "reason": d.reason}
-        cid = settings.agent_customer_id
         if op == "transfer_out":
             import uuid as _u
-            to_acct = p.get("to_account_id") or settings.agent_biller_account_id
-            tok = _mc.mint_token(settings.agent_mandate_id)
-            code, res = _mc.agent_transfer(tok, to_acct, p["amount"],
-                                           p.get("description", "Epcor utilities bill"),
-                                           _u.uuid4().hex)
+            to_acct = p.get("to_account_id") or _gw["biller"]
+            tok = client.mint_token(_gw["mandate_id"])
+            code, res = client.agent_transfer(tok, to_acct, p["amount"],
+                                              p.get("description", "Epcor utilities bill"),
+                                              _u.uuid4().hex)
             return {"decision": "allow", "operation": op, "http": code, "result": res}
         from .bank import BankClient
         bank = BankClient(settings.nano_bank_api)
-        ctok = _token(cid)
+        ctok = _token(_gw["customer_id"])
         if op == "open_account":
             return {"decision": "allow", "operation": op,
                     "result": bank.create_account(ctok, {"account_type": p["account_type"]})}
@@ -181,17 +190,16 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
     @app.post("/agent-gateway/message")
     async def gw_message(body: dict, authorization: str = Header(None)):
         _gw_auth(authorization)
-        d = _pep.check(settings.agent_mandate_id, "read:balance")
+        d = _mkpep(_mkclient()).check(_gw["mandate_id"], "read:balance")
         if not d.allowed:
             return {"answer": f"(denied) {d.reason}", "trace": []}
-        return await assist_fn(settings, settings.agent_customer_id,
-                               _token(settings.agent_customer_id),
-                               (body or {}).get("message", ""), None)
+        return await assist_fn(settings, _gw["customer_id"],
+                               _token(_gw["customer_id"]), (body or {}).get("message", ""), None)
 
     @app.post("/agent-gateway/revoke")
     def gw_revoke(authorization: str = Header(None)):
         _gw_auth(authorization)
-        _mc.revoke(_token(settings.agent_customer_id), settings.agent_mandate_id)
+        _mkclient().revoke(_token(_gw["customer_id"]), _gw["mandate_id"])
         return {"revoked": True}
 
     if seed_fn is not None:
@@ -201,5 +209,23 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
             in this process so the confirm path can mint their nano-bank token."""
             _auth(authorization)
             return seed_fn()
+
+        @app.post("/agent-gateway/demo-seed")
+        def gw_demo_seed(authorization: str = Header(None)):
+            """Seed a funded customer, register an external agent + grant its mandate
+            (and an Epcor biller), and rebind the gateway to it — one call, ready to run."""
+            _gw_auth(authorization)
+            from .bank import BankClient
+            from .seed import seed_agent_mandate
+            seeded = seed_fn()   # seeds Ada+Bo, registers their creds in the resolver
+            ada = seeded["customers"][0]
+            bank = BankClient(settings.nano_bank_api)
+            binding = seed_agent_mandate(bank, _token(ada["customer_id"]), ada["account_id"])
+            _gw.update(agent_id=binding["agent_id"], agent_secret=binding["agent_secret"],
+                       mandate_id=binding["mandate_id"], customer_id=ada["customer_id"],
+                       biller=binding["epcor_account_id"])
+            return {"customer_id": ada["customer_id"], "account_id": ada["account_id"],
+                    "mandate_id": binding["mandate_id"], "agent_id": binding["agent_id"],
+                    "epcor_account_id": binding["epcor_account_id"]}
 
     return app
