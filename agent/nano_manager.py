@@ -12,6 +12,7 @@ from .config import Settings
 from . import model_factory as mf
 from .mcp_server import LLM_TOOL_NAMES
 from .skills_registry import SkillRegistry, build_skill_menu, make_load_skill_tool
+from .trace import TraceRecorder
 
 MANAGER_PROMPT = (
     "You are a careful personal banking manager for ONE client. Answer only from the "
@@ -100,11 +101,13 @@ async def assist(settings: Settings, customer_id: str, token: Optional[str],
                             f"{_skills_section(held)}")
     tools = tools + [make_load_skill_tool(_SKILLS)]
 
+    rec = TraceRecorder()
     agent = create_react_agent(mf.llm("fast"), tools, prompt=MANAGER_PROMPT,
                                checkpointer=InMemorySaver())
     out = await agent.ainvoke(
         {"messages": [context, HumanMessage(message)]},
-        config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40})
+        config={"configurable": {"thread_id": thread_id}, "recursion_limit": 40,
+                "callbacks": [rec]})
 
     answer, pending = "(no answer)", None
     for m in reversed(out["messages"]):
@@ -136,7 +139,7 @@ async def assist(settings: Settings, customer_id: str, token: Optional[str],
 
     await _call("remember", fact=f"User asked: {message}", kind="user")
     await _call("remember", fact=f"Manager answered: {answer[:400]}", kind="assistant")
-    res = {"answer": answer, "thread_id": thread_id}
+    res = {"answer": answer, "thread_id": thread_id, "trace": rec.events()}
     if pending:
         res["pending_action"] = pending
     return res
