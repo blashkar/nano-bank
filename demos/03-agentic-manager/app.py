@@ -90,9 +90,10 @@ def _render_trace(trace):
                 st.error(e["error"])
 
 
-def action_box(title, key, placeholder):
+def action_box(title, key, default):
     st.subheader(title)
-    msg = st.text_input("Message", key=f"in_{key}", placeholder=placeholder)
+    ss.setdefault(f"in_{key}", default)   # pre-filled, ready to Send (editable)
+    msg = st.text_input("Message", key=f"in_{key}")
     if st.button("Send", key=f"send_{key}") and msg:
         body = {"message": msg}
         if ss["threads"].get(key):
@@ -122,9 +123,9 @@ def action_box(title, key, placeholder):
             _render_trace(data.get("trace"))
 
 
-action_box("① Open account", "open", "e.g. open a savings account")
+action_box("① Open account", "open", "Open a savings account for me")
 st.divider()
-action_box("② Register Interac payee", "payee", "e.g. register sam@example.ca as Sam")
+action_box("② Register Interac payee", "payee",
+           "Register sam@example.ca as a payee named Sam")
 st.divider()
-action_box("③ Perform transactions", "txn",
-           "e.g. deposit 100 to chequing · transfer 25 to savings · send 30 interac to sam@example.ca")
+action_box("③ Perform transactions", "txn", "Deposit 100 into my chequing account")
