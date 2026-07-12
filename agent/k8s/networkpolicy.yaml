@@ -1,0 +1,23 @@
+# Defense-in-depth: only the branch (agent-api) and its MCP gateway (agent-mcp)
+# may reach bank-api — so the external mandated agent has no in-cluster route to
+# the bank even if it somehow obtained bank credentials.
+#
+# NOTE: Kind's default CNI (kindnet) does NOT enforce NetworkPolicy — this is
+# enforced only under a policy-capable CNI (e.g. Calico). The PRIMARY guarantee
+# is app-level (path A): the external agent holds no bank URL and no bank/agent
+# credentials; the branch holds them and is the sole caller of the bank.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bank-api-ingress-lock
+  namespace: nano-bank
+spec:
+  podSelector:
+    matchLabels: { app: bank-api }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: agent-api } }
+        - podSelector: { matchLabels: { app: agent-mcp } }
+      ports:
+        - { protocol: TCP, port: 8081 }
