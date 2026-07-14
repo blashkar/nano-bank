@@ -178,6 +178,9 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
             code, res = client.agent_transfer(tok, to_acct, p["amount"],
                                               p.get("description", "Epcor utilities bill"),
                                               idem)
+            if code == 202:
+                return {"decision": "pending_approval", "operation": op, "http": code,
+                        "approval_id": (res or {}).get("approval_id"), "result": res}
             return {"decision": "allow", "operation": op, "http": code, "result": res}
         from .bank import BankClient
         bank = BankClient(settings.nano_bank_api)

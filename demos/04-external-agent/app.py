@@ -108,8 +108,12 @@ if ss["events"]:
             res = e.get("result", {})
             dec = res.get("decision", "?")
             _bubble("left", f"🤖 **Agent → act**", f"`{e['operation']}` {e.get('params', {})}")
-            tone = "allow" if dec == "allow" else "deny"
-            detail = res.get("reason") or (res.get("result") if dec == "allow" else res)
+            tone = {"allow": "allow", "deny": "deny"}.get(dec, "neutral")
+            if dec == "pending_approval":
+                detail = (f"⏸ over the daily cap — parked for the customer to approve "
+                          f"(approval `{str(res.get('approval_id'))[:8]}`). Not paid yet.")
+            else:
+                detail = res.get("reason") or (res.get("result") if dec == "allow" else res)
             _bubble("right", f"🏦 **Gateway** · mandate check → **{dec}**", f"{detail}", tone=tone)
         elif e["kind"] == "message":
             _bubble("left", "🤖 **Agent → asks the manager**", e.get("text", ""))

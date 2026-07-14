@@ -66,6 +66,20 @@ def test_unknown_operation_is_400():
     assert r.status_code == 400
 
 
+class _ParkingClient(FakeClient):
+    def agent_transfer(self, token, to, amount, desc, idem):
+        return 202, {"approval_id": "AP1", "status": "pending"}
+
+
+def test_act_transfer_over_cap_is_pending_approval():
+    s = Settings.from_env(_ENV)
+    c = TestClient(create_app(s, mandate_client=_ParkingClient(), mandate_pep=FakePEP(True)))
+    r = c.post("/agent-gateway/act", headers={"Authorization": "Bearer gw"},
+               json={"operation": "transfer_out", "params": {"amount": "100"}})
+    body = r.json()
+    assert body["decision"] == "pending_approval" and body["approval_id"] == "AP1"
+
+
 def test_act_transfer_uses_supplied_idempotency_key():
     fc = FakeClient()
     fc.keys = []
