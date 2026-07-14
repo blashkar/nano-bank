@@ -25,7 +25,8 @@ def test_transfer_sends_token_amount_and_idempotency():
     assert out["transaction_id"] == "t1"
     assert seen["url"].endswith("/api/v1/transactions/transfer")
     assert seen["auth"] == "Bearer jwt-abc"
-    assert seen["idem"] == "act-1"
+    # The bank reads idempotency_key from the BODY, not a header (review #1).
+    assert seen["body"]["idempotency_key"] == "act-1"
     assert seen["body"]["amount"] == "50.00"
 
 
