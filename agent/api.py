@@ -173,10 +173,11 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
         if op == "transfer_out":
             import uuid as _u
             to_acct = p.get("to_account_id") or _gw["biller"]
+            idem = p.get("idempotency_key") or _u.uuid4().hex
             tok = client.mint_token(_gw["mandate_id"])
             code, res = client.agent_transfer(tok, to_acct, p["amount"],
                                               p.get("description", "Epcor utilities bill"),
-                                              _u.uuid4().hex)
+                                              idem)
             return {"decision": "allow", "operation": op, "http": code, "result": res}
         from .bank import BankClient
         bank = BankClient(settings.nano_bank_api)

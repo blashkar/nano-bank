@@ -64,3 +64,17 @@ def test_unknown_operation_is_400():
     r = c.post("/agent-gateway/act", headers={"Authorization": "Bearer gw"},
                json={"operation": "nope", "params": {}})
     assert r.status_code == 400
+
+
+def test_act_transfer_uses_supplied_idempotency_key():
+    fc = FakeClient()
+    fc.keys = []
+    orig = fc.agent_transfer
+    def _cap(token, to, amount, desc, idem):
+        fc.keys.append(idem); return orig(token, to, amount, desc, idem)
+    fc.agent_transfer = _cap
+    s = Settings.from_env(_ENV)
+    c = TestClient(create_app(s, mandate_client=fc, mandate_pep=FakePEP(True)))
+    c.post("/agent-gateway/act", headers={"Authorization": "Bearer gw"},
+           json={"operation": "transfer_out", "params": {"amount": "50", "idempotency_key": "K1"}})
+    assert fc.keys[-1] == "K1"

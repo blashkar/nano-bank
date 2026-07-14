@@ -6,9 +6,17 @@ branch `/agent-gateway/*` endpoints: `act` (mandate-gated operations) and
 credentials — only the gateway base + gateway token.
 """
 from __future__ import annotations
+import hashlib
 import json
 from typing import Optional
 import httpx
+
+
+def _idem_key(op: str, params: dict) -> str:
+    """Stable per-(op,params) key so a re-run of the same instruction dedupes
+    at the bank instead of double-paying."""
+    payload = json.dumps({"op": op, "params": params}, sort_keys=True, default=str)
+    return hashlib.sha1(payload.encode()).hexdigest()
 
 
 class GatewayHTTP:
@@ -74,6 +82,7 @@ class ExternalAgent:
         for step in self._make_plan(instruction):
             if step[0] == "act":
                 _, op, params = step
+                params = {**params, "idempotency_key": _idem_key(op, params)}
                 res = self.gw.act(op, params)
                 events.append({"kind": "act", "operation": op, "params": params, "result": res})
             else:
