@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import time
 from typing import Optional, Protocol
 
 from fastapi import FastAPI, Header, HTTPException
@@ -37,22 +38,37 @@ class TokenResolver(Protocol):
     def resolve(self, customer_id: str) -> Optional[str]: ...
 
 
+def _default_login(base, cred):
+    from .bank import BankClient
+    return BankClient(base).login(*cred)
+
+
 class SeedTokenResolver:
-    """Phase-1 resolver: logs into nano-bank with seeded creds (customer_id -> creds)."""
-    def __init__(self, settings: Settings, creds: dict):
+    """Phase-1 resolver: logs into nano-bank with seeded creds (customer_id -> creds).
+
+    Customer JWTs expire in 15 min; cache each token with a TTL (default 10 min,
+    inside the 15-min window) and re-login on expiry so long-running demos don't
+    start 401ing a quarter-hour after boot.
+    """
+    def __init__(self, settings: Settings, creds: dict, *, ttl_seconds: int = 600,
+                 now=time.monotonic, login=_default_login):
         self.settings = settings
         self.creds = creds  # customer_id -> (email, password)
-        self._cache: dict = {}
+        self.ttl = ttl_seconds
+        self._now = now
+        self._login = login
+        self._cache: dict = {}  # customer_id -> (token, expires_at)
 
     def resolve(self, customer_id: str) -> Optional[str]:
-        if customer_id in self._cache:
-            return self._cache[customer_id]
         cred = self.creds.get(customer_id)
         if not cred:
             return None
-        from .bank import BankClient
-        tok = BankClient(self.settings.nano_bank_api).login(*cred)
-        self._cache[customer_id] = tok
+        hit = self._cache.get(customer_id)
+        now = self._now()
+        if hit and hit[1] > now:
+            return hit[0]
+        tok = self._login(self.settings.nano_bank_api, cred)
+        self._cache[customer_id] = (tok, now + self.ttl)
         return tok
 
 
