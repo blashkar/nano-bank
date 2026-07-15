@@ -1482,3 +1482,62 @@ async fn approve_failure_reverts_the_claim() {
     let resp = resolve_approval(&c, &token, &approval_id, "decline").await;
     assert_eq!(resp.status().as_u16(), 204, "decline after revert");
 }
+
+#[tokio::test]
+async fn executing_claim_is_locked_and_approved_is_final() {
+    let c = client();
+    require_stack!(&c);
+    let Some(db) = test_db().await else {
+        eprintln!("SKIP: no direct DB access");
+        return;
+    };
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let ask = park(&c, &atoken, b, 250.0, &format!("stepup-{}", Uuid::new_v4())).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // Simulate an in-flight claim (approve crashed/paused mid-execution).
+    sqlx::query(
+        "UPDATE pending_approvals SET status = 'executing' WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    // The in-flight ask is locked against BOTH verbs…
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 409, "approve while executing");
+    let resp = resolve_approval(&c, &token, &approval_id, "decline").await;
+    assert_eq!(resp.status().as_u16(), 409, "decline while executing");
+    // …the agent sees the honest transient state, and the expiry sweep must
+    // not touch it (only `pending` rows expire).
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "executing");
+    assert!(v["transaction_id"].is_null());
+
+    // Release the claim and approve for real: `approved` arrives WITH its
+    // transaction_id — never observable without one.
+    sqlx::query("UPDATE pending_approvals SET status = 'pending' WHERE approval_id = $1::uuid")
+        .bind(&approval_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "approved");
+    assert!(
+        v["transaction_id"].as_str().is_some(),
+        "approved must always carry transaction_id: {v:?}"
+    );
+}

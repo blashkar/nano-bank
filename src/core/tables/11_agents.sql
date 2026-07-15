@@ -105,8 +105,11 @@ CREATE TABLE pending_approvals (
     idempotency_key VARCHAR(128) NOT NULL,
     -- Which cap tripped: 'MAX_PER_TX_EXCEEDED' | 'DAILY_CAP_EXCEEDED'
     reason          TEXT NOT NULL,
+    -- 'executing' is the transient claim state while the approved transfer
+    -- posts: 'approved' is only ever written together with transaction_id, so
+    -- an agent polling can treat approved as final (never approved-with-no-txn).
     status          VARCHAR(20) NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'approved', 'declined', 'expired')),
+                    CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired')),
     transaction_id  UUID, -- the executed transfer (approved only)
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,

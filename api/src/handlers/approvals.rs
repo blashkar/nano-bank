@@ -7,6 +7,11 @@
 //! the transfer with the caps overridden for that one transfer — every other
 //! check (mandate active, scope, payee allowlist, funds, account limits) still
 //! runs. Decline kills it. Unresolved asks expire lazily on read/resolve.
+//!
+//! Status contract: `pending → executing → approved | pending(revert)`, or
+//! `pending → declined | expired`. `approved` always carries `transaction_id`
+//! (written atomically); `executing` is the short in-flight claim and is never
+//! swept by expiry.
 
 use axum::{
     extract::{Path, Query, State},
@@ -108,8 +113,12 @@ struct ClaimedApproval {
 
 /// Approve a parked transfer: claim the row (guarded, race-safe), then execute
 /// with the caps overridden — this consent IS the authorization for the
-/// overage. On an execution failure the claim reverts to `pending` (with the
-/// failure audited), so the owner can fund the account and retry, or decline.
+/// overage. The claim state is the transient `executing`, NOT `approved`:
+/// `approved` is only ever written together with `transaction_id`, so a
+/// polling agent can treat approved as final — there is no observable
+/// approved-with-no-transaction window. On an execution failure the claim
+/// reverts to `pending` (with the failure audited), so the owner can fund the
+/// account and retry, or decline.
 async fn approve_approval(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
@@ -117,11 +126,12 @@ async fn approve_approval(
 ) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
     expire_overdue(&state.pool, auth.customer_id).await?;
 
-    // Guarded claim: only one approver wins; a lost race / resolved row is a
-    // clean 409, someone else's approval is a 404 (no existence leak).
+    // Guarded claim: only one approver wins; a lost race / resolved / already
+    // in-flight row is a clean 409, someone else's approval is a 404 (no
+    // existence leak).
     let claimed = sqlx::query_as::<_, ClaimedApproval>(
         "UPDATE pending_approvals \
-         SET status = 'approved', resolved_at = CURRENT_TIMESTAMP \
+         SET status = 'executing' \
          WHERE approval_id = $1 AND customer_id = $2 AND status = 'pending' \
          RETURNING mandate_id, agent_id, account_id, to_account_id, amount, \
                    description, idempotency_key",
@@ -170,12 +180,18 @@ async fn approve_approval(
 
     match result {
         Ok(resp) => {
-            sqlx::query("UPDATE pending_approvals SET transaction_id = $2 WHERE approval_id = $1")
-                .bind(approval_id)
-                .bind(resp.transaction_id)
-                .execute(&state.pool)
-                .await
-                .map_err(AppError::Database)?;
+            // `approved` is born WITH its transaction_id — one atomic write.
+            sqlx::query(
+                "UPDATE pending_approvals \
+                 SET status = 'approved', transaction_id = $2, \
+                     resolved_at = CURRENT_TIMESTAMP \
+                 WHERE approval_id = $1 AND status = 'executing'",
+            )
+            .bind(approval_id)
+            .bind(resp.transaction_id)
+            .execute(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
             policy::record_action(
                 &state.pool,
                 claim.mandate_id,
@@ -198,8 +214,8 @@ async fn approve_approval(
             // Revert the claim so the ask stays actionable (expiry still applies).
             sqlx::query(
                 "UPDATE pending_approvals \
-                 SET status = 'pending', resolved_at = NULL \
-                 WHERE approval_id = $1 AND status = 'approved' AND transaction_id IS NULL",
+                 SET status = 'pending' \
+                 WHERE approval_id = $1 AND status = 'executing' AND transaction_id IS NULL",
             )
             .bind(approval_id)
             .execute(&state.pool)

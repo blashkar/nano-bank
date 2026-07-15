@@ -156,7 +156,7 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
             idempotency_key VARCHAR(128) NOT NULL,
             reason          TEXT NOT NULL,
             status          VARCHAR(20) NOT NULL DEFAULT 'pending'
-                            CHECK (status IN ('pending', 'approved', 'declined', 'expired')),
+                            CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired')),
             transaction_id  UUID,
             created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
             expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -167,6 +167,13 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
          ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending'",
         "CREATE INDEX IF NOT EXISTS idx_pending_approvals_customer \
          ON pending_approvals(customer_id, created_at)",
+        // Migrate DBs whose CHECK predates the transient 'executing' claim
+        // state ('approved' is only ever written together with transaction_id).
+        // DROP + re-ADD each boot: the pair is idempotent.
+        "ALTER TABLE pending_approvals \
+         DROP CONSTRAINT IF EXISTS pending_approvals_status_check",
+        "ALTER TABLE pending_approvals ADD CONSTRAINT pending_approvals_status_check \
+         CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired'))",
         // Saved Interac payees (address book). Self-heal for DBs predating the
         // 12_interac_recipients DDL, and migrate the old table-level UNIQUE to a
         // partial unique index so soft-deleted rows don't block re-registration.
