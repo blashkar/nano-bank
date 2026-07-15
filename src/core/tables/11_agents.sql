@@ -111,6 +111,10 @@ CREATE TABLE pending_approvals (
     status          VARCHAR(20) NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired')),
     transaction_id  UUID, -- the executed transfer (approved only)
+    -- Lease marker for the 'executing' claim: a crash mid-execution leaves the
+    -- row claimable again once claimed_at ages past the reclaim window (the
+    -- approve path finalizes by idempotency key, so re-approve can't double-pay).
+    claimed_at      TIMESTAMP WITH TIME ZONE,
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
     resolved_at     TIMESTAMP WITH TIME ZONE

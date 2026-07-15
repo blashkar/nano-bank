@@ -350,8 +350,9 @@ def check_approval(approval_id: str, account: str = "") -> dict[str, Any]:
     account is mandated. `approved` ALWAYS carries the executed
     transaction_id — treat it as final and report success to the user.
     `executing` means the owner approved and the transfer is posting — check
-    again shortly, don't report success yet. Declined/expired are final:
-    don't retry the payment unless the user explicitly asks again."""
+    again shortly, don't report success yet (a stuck `executing` self-heals
+    back to `pending` within ~2 minutes, so keep polling). Declined/expired
+    are final: don't retry the payment unless the user explicitly asks again."""
     r = _with_resolved(account)
     if "error" in r:
         return r

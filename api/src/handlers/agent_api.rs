@@ -310,7 +310,20 @@ async fn get_approval_status(
     agent: AuthenticatedAgent,
     Path(approval_id): Path<Uuid>,
 ) -> Result<Json<AgentApprovalStatus>, AppError> {
-    // Lazy expiry, same idiom as the customer surface.
+    // Lazy reclaim-then-expire, same idiom as the customer surface — the agent
+    // polling is the other liveness path (an abandoned claim must become
+    // actionable even if the customer never opens /app).
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'pending', claimed_at = NULL \
+         WHERE approval_id = $1 AND status = 'executing' AND transaction_id IS NULL \
+           AND claimed_at <= CURRENT_TIMESTAMP - $2 * INTERVAL '1 second'",
+    )
+    .bind(approval_id)
+    .bind(crate::handlers::approvals::RECLAIM_AFTER_SECONDS)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
     sqlx::query(
         "UPDATE pending_approvals \
          SET status = 'expired', resolved_at = CURRENT_TIMESTAMP \

@@ -1115,11 +1115,14 @@ async fn resolve_approval(
     approval_id: &str,
     verb: &str,
 ) -> reqwest::Response {
-    c.post(format!("{}/api/v1/approvals/{approval_id}/{verb}", base_url()))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap()
+    c.post(format!(
+        "{}/api/v1/approvals/{approval_id}/{verb}",
+        base_url()
+    ))
+    .bearer_auth(token)
+    .send()
+    .await
+    .unwrap()
 }
 
 /// The agent's poll of its own ask.
@@ -1209,7 +1212,7 @@ async fn approve_executes_with_caps_overridden() {
     let txn_id = v["transaction_id"].as_str().unwrap().to_string();
     assert_eq!(balance(&c, &token, b).await, 250.0);
     assert_eq!(balance(&c, &token, a).await, 748.5); // amount + $1.50 fee
-    // The overage still consumed the daily allowance.
+                                                     // The overage still consumed the daily allowance.
     assert_eq!(mandate_daily_used(&c, &token, mandate).await, 250.0);
 
     // The agent's poll shows the outcome, transaction included.
@@ -1460,13 +1463,12 @@ async fn approve_failure_reverts_the_claim() {
     let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
     assert_eq!(resp.status().as_u16(), 409, "revoked mandate");
     if let Some(db) = test_db().await {
-        let (status,): (String,) = sqlx::query_as(
-            "SELECT status FROM pending_approvals WHERE approval_id = $1::uuid",
-        )
-        .bind(&approval_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM pending_approvals WHERE approval_id = $1::uuid")
+                .bind(&approval_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(status, "pending", "claim reverted after mandate death");
         let audited: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM agent_actions WHERE mandate_id = $1 \
@@ -1504,13 +1506,11 @@ async fn executing_claim_is_locked_and_approved_is_final() {
     let approval_id = ask["approval_id"].as_str().unwrap().to_string();
 
     // Simulate an in-flight claim (approve crashed/paused mid-execution).
-    sqlx::query(
-        "UPDATE pending_approvals SET status = 'executing' WHERE approval_id = $1::uuid",
-    )
-    .bind(&approval_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE pending_approvals SET status = 'executing' WHERE approval_id = $1::uuid")
+        .bind(&approval_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // The in-flight ask is locked against BOTH verbs…
     let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
@@ -1540,4 +1540,131 @@ async fn executing_claim_is_locked_and_approved_is_final() {
         v["transaction_id"].as_str().is_some(),
         "approved must always carry transaction_id: {v:?}"
     );
+}
+
+#[tokio::test]
+async fn dead_executing_claim_is_reclaimed_not_stranded() {
+    let c = client();
+    require_stack!(&c);
+    let Some(db) = test_db().await else {
+        eprintln!("SKIP: no direct DB access");
+        return;
+    };
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let ask = park(&c, &atoken, b, 250.0, &format!("stepup-{}", Uuid::new_v4())).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // A FRESH claim is honored, not reclaimed: recent claimed_at stays locked.
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'executing', claimed_at = CURRENT_TIMESTAMP \
+         WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await
+    .unwrap();
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(
+        v["status"], "executing",
+        "fresh lease must not be reclaimed"
+    );
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 409, "fresh lease still locked");
+
+    // A DEAD claim (crashed executor) ages past the lease window and is
+    // reclaimed by the next poll — the ask becomes actionable again.
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET claimed_at = CURRENT_TIMESTAMP - INTERVAL '5 minutes' \
+         WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await
+    .unwrap();
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "pending", "dead lease reclaimed on agent poll");
+
+    // …and the reclaimed ask approves normally.
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 201, "approve after reclaim");
+    assert_eq!(balance(&c, &token, b).await, 250.0);
+}
+
+#[tokio::test]
+async fn reapprove_after_stranded_execution_adopts_the_transaction() {
+    let c = client();
+    require_stack!(&c);
+    let Some(db) = test_db().await else {
+        eprintln!("SKIP: no direct DB access");
+        return;
+    };
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let ask = park(&c, &atoken, b, 250.0, &format!("stepup-{}", Uuid::new_v4())).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // Execute for real…
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let v: Value = resp.json().await.unwrap();
+    let txn = v["transaction_id"].as_str().unwrap().to_string();
+    assert_eq!(balance(&c, &token, b).await, 250.0);
+
+    // …then simulate the worst strand: the transfer posted but the process
+    // died BEFORE the approved-write (row back to a dead 'executing' claim,
+    // transaction_id lost).
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'executing', transaction_id = NULL, resolved_at = NULL, \
+             claimed_at = CURRENT_TIMESTAMP - INTERVAL '5 minutes' \
+         WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    // Reclaim (via the customer's list) makes it actionable; re-approve must
+    // ADOPT the already-executed transfer — same transaction, no double spend.
+    let resp = c
+        .get(format!("{}/api/v1/approvals", base_url()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let resp = resolve_approval(&c, &token, &approval_id, "approve").await;
+    assert_eq!(resp.status().as_u16(), 200, "adopt, not re-execute");
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(
+        v["transaction_id"].as_str().unwrap(),
+        txn,
+        "same transaction adopted"
+    );
+    assert_eq!(balance(&c, &token, b).await, 250.0, "no double spend");
+
+    // The row is whole again: approved WITH the original transaction.
+    let resp = poll_approval(&c, &atoken, &approval_id).await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["status"], "approved");
+    assert_eq!(v["transaction_id"].as_str().unwrap(), txn);
 }

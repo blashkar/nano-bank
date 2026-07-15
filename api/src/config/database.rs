@@ -169,11 +169,20 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
          ON pending_approvals(customer_id, created_at)",
         // Migrate DBs whose CHECK predates the transient 'executing' claim
         // state ('approved' is only ever written together with transaction_id).
-        // DROP + re-ADD each boot: the pair is idempotent.
+        // DROP + re-ADD each boot: the pair is idempotent, and the ADD tolerates
+        // a concurrent boot having re-added it first (duplicate_object).
         "ALTER TABLE pending_approvals \
          DROP CONSTRAINT IF EXISTS pending_approvals_status_check",
-        "ALTER TABLE pending_approvals ADD CONSTRAINT pending_approvals_status_check \
-         CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired'))",
+        r#"
+        DO $$ BEGIN
+            ALTER TABLE pending_approvals ADD CONSTRAINT pending_approvals_status_check
+            CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$
+        "#,
+        // Lease marker for the 'executing' claim (timed reclaim of dead claims).
+        "ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS \
+         claimed_at TIMESTAMP WITH TIME ZONE",
         // Saved Interac payees (address book). Self-heal for DBs predating the
         // 12_interac_recipients DDL, and migrate the old table-level UNIQUE to a
         // partial unique index so soft-deleted rows don't block re-registration.
