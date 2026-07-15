@@ -167,6 +167,25 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
          ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending'",
         "CREATE INDEX IF NOT EXISTS idx_pending_approvals_customer \
          ON pending_approvals(customer_id, created_at)",
+        // Saved Interac payees (address book). Self-heal for DBs predating the
+        // 12_interac_recipients DDL, and migrate the old table-level UNIQUE to a
+        // partial unique index so soft-deleted rows don't block re-registration.
+        r#"
+        CREATE TABLE IF NOT EXISTS interac_recipients (
+            recipient_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            customer_id  UUID NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+            email        TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'active',
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_interac_recipients_customer \
+         ON interac_recipients(customer_id)",
+        "ALTER TABLE interac_recipients \
+         DROP CONSTRAINT IF EXISTS interac_recipients_customer_id_email_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_interac_recipients_active \
+         ON interac_recipients(customer_id, email) WHERE status = 'active'",
     ] {
         sqlx::query(ddl).execute(pool).await?;
     }
