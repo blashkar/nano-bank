@@ -487,3 +487,24 @@ DELETE {{baseUrl}}/api/v1/mandates/{{mandateId}}
 Authorization: Bearer {{txnToken}}
 
 ###
+
+### ---------------------------------------------------------------------------
+### FraudCheck port (screening runs before every money movement)
+### Enable with NANO_BANK__FRAUD__BACKEND=engine (default off = no-op).
+### The engine answers with an ACTION only; declines surface as:
+###   403 TRANSACTION_DECLINED     (opaque, terminal)
+###   403 TRANSACTION_UNDER_REVIEW (engine opened a review case)
+###   503 SERVICE_UNAVAILABLE      (engine down + amount above fail_closed_above)
+### Allowed movements carry the audit linkage in transactions.metadata.fraud
+### {operation_id, decision_id, failed_open}. Login may send device_fingerprint;
+### it is stored on the session and screened per transaction.
+
+# Login with a device fingerprint (fraud-screening context)
+POST http://localhost:8081/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "customer@example.com",
+  "password": "SecurePass123!",
+  "device_fingerprint": "my-laptop-fp"
+}

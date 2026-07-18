@@ -196,6 +196,12 @@ async fn post_mandated_transfer(
                 cap_override: false,
             }),
         },
+        crate::fraud::gate::Screening {
+            channel: "web", // overridden to agentic_branch by the agent ctx
+            session_id: None,
+            approval_latency_seconds: None,
+            screen_scope: None,
+        },
     )
     .await;
 

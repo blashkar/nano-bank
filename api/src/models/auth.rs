@@ -9,6 +9,12 @@ pub struct LoginRequest {
 
     #[validate(length(min = 1))]
     pub password: String,
+
+    /// Optional client-supplied device identifier, stored on the session and
+    /// recovered per-transaction as fraud-screening context (device novelty,
+    /// device blocklists). Absence is itself a signal, never an error.
+    #[validate(length(max = 255))]
+    pub device_fingerprint: Option<String>,
 }
 
 /// Client-credentials request for a network-plane service token, submitted to

@@ -355,15 +355,17 @@ async fn login(
 
     let refresh_token = generate_opaque_secret();
     let session_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO user_sessions (customer_id, session_token, ip_address, user_agent, expires_at)
-         VALUES ($1, encode(digest($2, 'sha256'), 'hex'), $3::inet, $4,
-                 now() + ($5 * interval '1 second'))
+        "INSERT INTO user_sessions (customer_id, session_token, ip_address, user_agent, \
+                                    device_fingerprint, expires_at)
+         VALUES ($1, encode(digest($2, 'sha256'), 'hex'), $3::inet, $4, $5,
+                 now() + ($6 * interval '1 second'))
          RETURNING session_id",
     )
     .bind(customer_id)
     .bind(&refresh_token)
     .bind(&ip)
     .bind(ua.as_deref())
+    .bind(payload.device_fingerprint.as_deref())
     .bind(state.settings.jwt.refresh_expires_in)
     .fetch_one(&state.pool)
     .await

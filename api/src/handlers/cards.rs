@@ -162,8 +162,16 @@ pub(crate) async fn post_gl_entry(
             reference: Some(reference.to_string()),
             description: Some(description.to_string()),
             lines: vec![
-                EntryLine { account: debit, direction: Direction::Debit, amount },
-                EntryLine { account: credit, direction: Direction::Credit, amount },
+                EntryLine {
+                    account: debit,
+                    direction: Direction::Debit,
+                    amount,
+                },
+                EntryLine {
+                    account: credit,
+                    direction: Direction::Credit,
+                    amount,
+                },
             ],
         })
         .await
@@ -203,6 +211,55 @@ async fn authorize(
     let merchant = req
         .merchant
         .unwrap_or_else(|| "Unknown Merchant".to_string());
+
+    // Fraud screening BEFORE the transaction opens (never a network call under
+    // the card row lock). Owner/balance read is non-locking; the authoritative
+    // checks still run under FOR UPDATE below. A risk decline follows card
+    // semantics: 200 with status=declined, not an HTTP error.
+    let precheck: Option<(uuid::Uuid, rust_decimal::Decimal)> =
+        sqlx::query_as("SELECT customer_id, available_balance FROM accounts WHERE account_id = $1")
+            .bind(req.account_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    if let Some((owner, available_balance)) = precheck {
+        let screened = crate::fraud::gate::screen(
+            &state,
+            crate::fraud::gate::ScreenInput {
+                kind: "card_authorize",
+                amount,
+                customer_id: owner,
+                from_account_id: req.account_id,
+                to_account_id: None,
+                payee_handle: None,
+                description: None,
+                external_reference: None,
+                merchant: Some(&merchant),
+                idempotency_key: None,
+                channel: "card_network",
+                session_id: None,
+                agent: None,
+            },
+        )
+        .await;
+        match screened {
+            Ok(_) => {}
+            Err(AppError::TransactionDeclined) | Err(AppError::TransactionUnderReview(_)) => {
+                return Ok((
+                    StatusCode::OK,
+                    Json(AuthorizeResponse {
+                        status: "declined",
+                        auth_id: None,
+                        account_id: req.account_id,
+                        amount,
+                        merchant,
+                        available_balance,
+                        reason: Some("risk_declined".to_string()),
+                    }),
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     let mut tx = state.pool.begin().await?;
 

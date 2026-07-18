@@ -104,6 +104,9 @@ struct ClaimedApproval {
     amount: Decimal,
     description: String,
     idempotency_key: String,
+    /// When the approval was parked — the park→approve latency is fraud
+    /// context (see the screening call in `approve`).
+    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Approve a parked transfer: claim the row (guarded, race-safe), then execute
@@ -124,7 +127,7 @@ async fn approve_approval(
          SET status = 'approved', resolved_at = CURRENT_TIMESTAMP \
          WHERE approval_id = $1 AND customer_id = $2 AND status = 'pending' \
          RETURNING mandate_id, agent_id, account_id, to_account_id, amount, \
-                   description, idempotency_key",
+                   description, idempotency_key, created_at",
     )
     .bind(approval_id)
     .bind(auth.customer_id)
@@ -149,6 +152,14 @@ async fn approve_approval(
         };
     };
 
+    // Step-up context for fraud screening: how long the customer deliberated
+    // before approving the over-cap ask (near-instant approvals are their own
+    // risk signal, engine-side `rapid_approval` rule).
+    let approval_latency_seconds = (chrono::Utc::now() - claim.created_at)
+        .num_milliseconds()
+        .max(0) as f64
+        / 1000.0;
+
     let result = execute_transfer(
         &state,
         auth.customer_id,
@@ -164,6 +175,15 @@ async fn approve_approval(
                 mandate_id: claim.mandate_id,
                 cap_override: true,
             }),
+        },
+        crate::fraud::gate::Screening {
+            channel: "web", // overridden to agentic_branch by the agent ctx
+            session_id: auth.session_id,
+            approval_latency_seconds: Some(approval_latency_seconds),
+            // The agent's original ask was already screened under this same
+            // caller key; the approved execution is a DIFFERENT decision
+            // (cap_override + latency context) and must not replay it.
+            screen_scope: Some("stepup"),
         },
     )
     .await;
@@ -245,7 +265,7 @@ async fn decline_approval(
          SET status = 'declined', resolved_at = CURRENT_TIMESTAMP \
          WHERE approval_id = $1 AND customer_id = $2 AND status = 'pending' \
          RETURNING mandate_id, agent_id, account_id, to_account_id, amount, \
-                   description, idempotency_key",
+                   description, idempotency_key, created_at",
     )
     .bind(approval_id)
     .bind(auth.customer_id)
