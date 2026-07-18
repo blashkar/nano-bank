@@ -77,6 +77,19 @@ pub enum AppError {
     #[error("Device not trusted")]
     DeviceNotTrusted,
 
+    /// The fraud engine declined this movement. Deliberately generic: reason
+    /// codes live only in the engine's decision log (never leaked to callers,
+    /// or transitively to agents).
+    #[error(
+        "This transaction cannot be completed. Contact support if you believe this is an error."
+    )]
+    TransactionDeclined,
+
+    /// The fraud engine wants review/step-up before this movement completes.
+    /// Carries the engine's customer-safe message verbatim.
+    #[error("{0}")]
+    TransactionUnderReview(String),
+
     #[error("Suspicious activity detected")]
     SuspiciousActivity,
 }
@@ -160,6 +173,14 @@ impl IntoResponse for AppError {
                 "MANDATE_INACTIVE",
                 "The mandate behind this token is not active",
             ),
+            AppError::TransactionDeclined => (
+                StatusCode::FORBIDDEN,
+                "TRANSACTION_DECLINED",
+                "This transaction cannot be completed. Contact support if you believe this is an error.",
+            ),
+            AppError::TransactionUnderReview(msg) => {
+                (StatusCode::FORBIDDEN, "TRANSACTION_UNDER_REVIEW", msg.as_str())
+            }
             AppError::PolicyDenied(reason) => {
                 (StatusCode::FORBIDDEN, "POLICY_DENIED", reason.as_str())
             }

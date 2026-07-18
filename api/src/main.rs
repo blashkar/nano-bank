@@ -1,6 +1,7 @@
 mod aft;
 mod config;
 mod errors;
+mod fraud;
 mod handlers;
 mod ledger;
 mod lynx;
@@ -148,6 +149,7 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
 
     // Select the accounting core behind the swappable Ledger port.
     let ledger = build_ledger();
+    let fraud = build_fraud_check(settings);
     info!("🔌 Ledger backend: {}", ledger.backend());
 
     // Create application state
@@ -155,6 +157,7 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         pool: pool.clone(),
         settings: settings.clone(),
         ledger,
+        fraud,
     };
 
     // Build the router
@@ -185,12 +188,10 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         .nest("/api/v1/approvals", handlers::approvals::approval_routes())
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
-
         // Interac e-Transfer rails
         .nest("/api/v1/interac", handlers::interac::interac_routes())
         .nest("/api/v1/aft", handlers::aft::aft_routes())
         .nest("/api/v1/lynx", handlers::lynx::lynx_routes())
-
         // Transaction routes
         .nest(
             "/api/v1/transactions",
@@ -210,6 +211,29 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
                 .layer(cors),
         )
         .with_state(app_state)
+}
+
+/// Construct the fraud screening backend selected by `[fraud] backend`
+/// (`NANO_BANK__FRAUD__BACKEND`): "engine" = the HTTP fraud engine, anything
+/// else = no-op (default off — zero behavior change until opted in).
+fn build_fraud_check(settings: &Settings) -> std::sync::Arc<dyn fraud::FraudCheck> {
+    use std::sync::Arc;
+    match settings.fraud.backend.as_str() {
+        "engine" => {
+            info!(url = %settings.fraud.engine_url, "fraud screening: engine backend");
+            Arc::new(fraud::engine::EngineFraudCheck::new(
+                settings.fraud.engine_url.clone(),
+                settings.fraud.service_token.clone(),
+                settings.fraud.timeout_ms,
+            ))
+        }
+        other => {
+            if other != "off" {
+                warn!(backend = other, "unknown fraud backend, screening is OFF");
+            }
+            Arc::new(fraud::noop::NoopFraudCheck)
+        }
+    }
 }
 
 /// Construct the accounting core selected by `CORE_BACKEND` (modern | legacy).

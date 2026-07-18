@@ -52,3 +52,16 @@ stale_minutes = 60
 # How long a step-up pending approval (an over-cap agent transfer awaiting the
 # owner's approve/decline) stays actionable before it expires.
 approval_ttl_minutes = 60
+
+[fraud]
+# FraudCheck port: "engine" calls the fraud engine before every money
+# movement; "off" (default) is a no-op and the operational kill switch.
+backend = "off"
+engine_url = "http://localhost:8092"
+# Total per-call budget in ms.
+timeout_ms = 150
+# Engine unreachable: <= this amount fails OPEN (proceed + rescore), above
+# fails CLOSED (503). String so it deserialises to Decimal exactly.
+fail_closed_above = "1000.00"
+# Must match the engine's FRAUD_ENGINE__AUTH__SERVICE_TOKEN.
+service_token = "dev-service-token"

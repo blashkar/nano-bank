@@ -18,6 +18,60 @@ pub struct Settings {
     pub lynx: LynxSettings,
     #[serde(default)]
     pub agent: AgentSettings,
+    #[serde(default)]
+    pub fraud: FraudSettings,
+}
+
+/// FraudCheck port tunables. Overridable via `config/*.toml` or the layered
+/// env vars, e.g. `NANO_BANK__FRAUD__BACKEND=engine`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct FraudSettings {
+    /// "engine" = call the fraud engine; anything else = no-op (default off).
+    #[serde(default = "default_fraud_backend")]
+    pub backend: String,
+    #[serde(default = "default_fraud_engine_url")]
+    pub engine_url: String,
+    /// Total per-call budget (connect capped at 50ms within it).
+    #[serde(default = "default_fraud_timeout_ms")]
+    pub timeout_ms: u64,
+    /// When the engine is unreachable: movements at or below this amount fail
+    /// OPEN (proceed + post-hoc rescore), above it fail CLOSED (503).
+    #[serde(
+        with = "rust_decimal::serde::str",
+        default = "default_fail_closed_above"
+    )]
+    pub fail_closed_above: Decimal,
+    /// Bearer token for the engine's decision API (its FRAUD_ENGINE__AUTH__SERVICE_TOKEN).
+    #[serde(default)]
+    pub service_token: String,
+}
+
+fn default_fraud_backend() -> String {
+    "off".to_string()
+}
+
+fn default_fraud_engine_url() -> String {
+    "http://localhost:8092".to_string()
+}
+
+fn default_fraud_timeout_ms() -> u64 {
+    150
+}
+
+fn default_fail_closed_above() -> Decimal {
+    Decimal::new(100000, 2) // 1000.00 CAD
+}
+
+impl Default for FraudSettings {
+    fn default() -> Self {
+        Self {
+            backend: default_fraud_backend(),
+            engine_url: default_fraud_engine_url(),
+            timeout_ms: default_fraud_timeout_ms(),
+            fail_closed_above: default_fail_closed_above(),
+            service_token: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -231,6 +285,7 @@ impl Default for Settings {
             interac: InteracSettings::default(),
             lynx: LynxSettings::default(),
             agent: AgentSettings::default(),
+            fraud: FraudSettings::default(),
         }
     }
 }
