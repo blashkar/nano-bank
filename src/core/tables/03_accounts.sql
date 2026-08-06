@@ -75,6 +75,11 @@ CREATE TABLE account_holds (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     released_at TIMESTAMP WITH TIME ZONE,
+    -- Same shape as transactions.metadata, and for card authorizations it holds
+    -- the same `fraud` blob. A card is screened at authorize but its
+    -- transactions row is not written until capture, a separate request, so the
+    -- engine linkage has to rest here in between or it is lost (#54).
+    metadata JSONB,
 
     -- Constraints
     CONSTRAINT chk_hold_amount_positive CHECK (amount > 0),

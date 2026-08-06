@@ -792,3 +792,99 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .unwrap();
     assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
 }
+
+/// A captured **card purchase** resolves to the decision made at authorize (#54).
+///
+/// Cards are the awkward case: `screen()` runs in `authorize`, but the
+/// `transactions` row is not written until `capture` — a separate request where
+/// the `FraudLink` no longer exists. Before this the engine's ruling on a card
+/// purchase, possibly a **block**, was simply dropped, and `fraud-link` answered
+/// nulls indistinguishable from "never screened".
+///
+/// Two things are asserted, and the second is the one a naive fix gets wrong:
+/// the id must name a real engine decision, **and** it must be the one minted at
+/// authorize. Capture does not re-screen — it settles a decision already made —
+/// so a *different* id appearing here would mean something screened silently.
+#[tokio::test]
+async fn fraud_link_resolves_a_captured_card_purchase() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+    let card = c
+        .post(format!("{}/api/v1/accounts", base_url()))
+        .bearer_auth(&token)
+        .json(&json!({ "account_type": "credit_card" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(card.status().is_success(), "create card: {}", card.status());
+    let cv: Value = card.json().await.unwrap();
+    let card_id = Uuid::parse_str(cv["account_id"].as_str().unwrap()).unwrap();
+
+    let svc = service_token(&c).await;
+    let auth = c
+        .post(format!("{}/api/v1/cards/authorize", base_url()))
+        .bearer_auth(&svc)
+        .json(&json!({ "account_id": card_id, "amount": 42.50, "merchant": "Linkage Co" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(auth.status().is_success(), "authorize: {}", auth.status());
+    let av: Value = auth.json().await.unwrap();
+    assert_eq!(av["status"], "approved", "authorize should approve: {av}");
+    let auth_id = av["auth_id"].as_str().expect("auth_id").to_string();
+
+    // The decision was made above; capture only settles it.
+    let Some(pool) = test_db().await else { return };
+    let (held,): (Option<Value>,) =
+        sqlx::query_as("SELECT metadata FROM account_holds WHERE hold_id = $1")
+            .bind(Uuid::parse_str(&auth_id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let authorized_op = held
+        .as_ref()
+        .and_then(|m| m.get("fraud"))
+        .and_then(|f| f.get("operation_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("authorize must record its linkage on the hold: {held:?}"))
+        .to_string();
+
+    let cap = c
+        .post(format!("{}/api/v1/cards/capture", base_url()))
+        .bearer_auth(&svc)
+        .json(&json!({ "auth_id": auth_id }))
+        .send()
+        .await
+        .unwrap();
+    assert!(cap.status().is_success(), "capture: {}", cap.status());
+    let cvj: Value = cap.json().await.unwrap();
+    let txn_id = Uuid::parse_str(
+        cvj["transaction_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("capture must return a transaction_id: {cvj}")),
+    )
+    .unwrap();
+
+    let link = fraud_link(&c, &svc, txn_id).await;
+    assert_eq!(link.status().as_u16(), 200);
+    let link: Value = link.json().await.unwrap();
+    let op_id = link["operation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a captured card purchase must resolve: {link}"));
+
+    assert_eq!(
+        op_id, authorized_op,
+        "the purchase must carry the decision from authorize, not a new screening"
+    );
+
+    let Some(engine) = engine_db().await else { return };
+    let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
+        .bind(Uuid::parse_str(op_id).unwrap())
+        .fetch_one(&engine)
+        .await
+        .unwrap();
+    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+}
