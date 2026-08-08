@@ -73,6 +73,27 @@ podman logs -f nano-bank-viewer       # streamlit logs
 ./stop-testing.sh                      # tear the harness down
 ```
 
+## One-shot seed (demo / tests only)
+
+`run-testing.sh` runs the simulators **forever** (they poll continuously). For a
+demo or a test that just needs *some* activity to look at and then stops, use the
+bounded seeder instead:
+
+```bash
+./seed-demo.sh                                   # small default seed, then exits
+CUSTOMERS=20 VISA_CYCLES=100 ./seed-demo.sh      # more volume
+AFT_CYCLES=15 LYNX_CYCLES=10 ./seed-demo.sh      # also seed AFT + Lynx
+```
+
+It reuses the same generator + rail simulators, but runs each one **once** with a
+bounded `MAX_CYCLES` (`0` = forever is the harness default) and `INTERVAL_SECONDS=0`,
+so every step finishes deterministically. It self-provisions a `testing/.venv`
+(via `uv`, gitignored) rather than podman, so it runs directly on the host.
+Prereqs: the bank API on `:8081` and a Postgres port-forward on `::1:5432`.
+
+Seeding is deliberately a **demo/test-only** concern — no app process or k8s
+manifest ever seeds. `coo/verify-coo.sh` calls this when run with `SEED=1`.
+
 ## Configuration
 
 `run-testing.sh` honours these env vars (with defaults):

@@ -52,6 +52,9 @@ RETURN_PROB = float(os.getenv("RETURN_PROB", "0.2"))
 MIN_AMOUNT = float(os.getenv("MIN_AMOUNT", "20"))
 MAX_AMOUNT = float(os.getenv("MAX_AMOUNT", "500"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+# Bounded run for demo/test-only seeding: stop after this many poll cycles.
+# 0 = run forever (the default; how the live test harness runs it).
+MAX_CYCLES = int(os.getenv("MAX_CYCLES", "0"))
 
 DB = dict(
     host=os.getenv("DB_HOST", "::1"),
@@ -278,8 +281,9 @@ def main() -> int:
         f"inbound_prob={INBOUND_PROB} return_prob={RETURN_PROB}")
     wait_for_api()
     session = requests.Session()
+    cycles = 0
     try:
-        while True:
+        while MAX_CYCLES == 0 or cycles < MAX_CYCLES:
             for batch_id in open_batches():
                 submit_batch(session, batch_id)
             for batch_id in submitted_batches():
@@ -292,6 +296,7 @@ def main() -> int:
                 credit = settled_credit_to_return()
                 if credit:
                     originate_return(session, credit)
+            cycles += 1
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")

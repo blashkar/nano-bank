@@ -1,0 +1,5 @@
+# Union of the generator + rail-simulator deps, for the demo/test-only seeder
+# (testing/seed-demo.sh). Not used by any app or k8s manifest.
+requests==2.32.3
+Faker==30.8.2
+psycopg2-binary==2.9.10

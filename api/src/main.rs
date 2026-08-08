@@ -196,11 +196,9 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         )
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
-
         // Interest / NIM engine (spec #2): daily accrual + monthly capitalisation
         .nest("/api/v1/finance", handlers::finance::finance_routes())
         .nest("/api/v1/fraud", handlers::fraud_admin::fraud_admin_routes())
-
         // Interac e-Transfer rails
         .nest("/api/v1/interac", handlers::interac::interac_routes())
         .nest("/api/v1/aft", handlers::aft::aft_routes())

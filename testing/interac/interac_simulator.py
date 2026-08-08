@@ -55,6 +55,9 @@ SETTLE_INSTITUTION = os.getenv("SETTLE_INSTITUTION", "004")
 MIN_AMOUNT = float(os.getenv("MIN_AMOUNT", "5"))
 MAX_AMOUNT = float(os.getenv("MAX_AMOUNT", "200"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+# Bounded run for demo/test-only seeding: stop after this many poll cycles.
+# 0 = run forever (the default; how the live test harness runs it).
+MAX_CYCLES = int(os.getenv("MAX_CYCLES", "0"))
 
 DB = dict(
     host=os.getenv("DB_HOST", "::1"),
@@ -251,8 +254,9 @@ def main() -> int:
 
     session = requests.Session()
     waiting_logged = False
+    cycles = 0
     try:
-        while True:
+        while MAX_CYCLES == 0 or cycles < MAX_CYCLES:
             for nid, eid in fetch_undelivered_external():
                 outcome = "declined" if random.random() < DECLINE_PROB else "claimed"
                 resp = settle(session, eid, outcome)
@@ -280,6 +284,7 @@ def main() -> int:
                     waiting_logged = False
                     originate_inbound(session, handle)
 
+            cycles += 1
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")

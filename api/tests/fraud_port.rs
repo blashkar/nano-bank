@@ -385,7 +385,13 @@ async fn engine_mode_agent_refusal_audits_once() {
     let resp = agent_transfer(&c, &atoken, to, 40.0).await;
     assert_eq!(resp.status().as_u16(), 403, "watched destination must 403");
     let v: Value = resp.json().await.unwrap();
-    assert_eq!(v["error"]["code"], "TRANSACTION_UNDER_REVIEW");
+    // The agent plane returns the OPAQUE refusal, not the specific review code:
+    // `refusal_for_agent` (handlers/agent_api.rs) collapses every refusal —
+    // including hold_review — to `TRANSFER_REFUSED`, because *why* a transfer was
+    // refused is deliberately not the agent's business. The specific reason
+    // survives for the granting customer in `agent_actions` (asserted below), not
+    // in the HTTP body. Do not "fix" this back to TRANSACTION_UNDER_REVIEW.
+    assert_eq!(v["error"]["code"], "TRANSFER_REFUSED");
 
     if let Some(db) = test_db().await {
         let rows: Vec<(String, Option<String>)> = sqlx::query_as(
@@ -784,6 +790,118 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .unwrap_or_else(|| panic!("a screened rail movement must resolve: {link}"));
 
     // It has to be the decision the ENGINE recorded, not just a well-formed id.
+    let Some(engine) = engine_db().await else { return };
+    let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
+        .bind(Uuid::parse_str(op_id).unwrap())
+        .fetch_one(&engine)
+        .await
+        .unwrap();
+    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+}
+
+/// A settled **AFT** movement resolves to the decision made at origination (#54).
+///
+/// AFT is the last of the split-request rails: `create_credit` screens and
+/// writes only an `aft_entries` row — no `transactions` row exists until the
+/// batch settles, which is a separate service-plane request where the
+/// `FraudLink` is long gone. So the engine's ruling on a direct deposit,
+/// possibly a **block**, was dropped, and `fraud-link` answered nulls
+/// indistinguishable from "never screened".
+///
+/// Two assertions, and the second is the one a naive fix gets wrong: the id must
+/// name a real engine decision, **and** be the one minted at origination.
+/// Settlement does not re-screen, so a different id here would mean something
+/// screened silently.
+#[tokio::test]
+async fn fraud_link_resolves_a_settled_aft_movement() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+    let account = create_account(&c, &token).await;
+    if seed_deposit(&c, &token, account, 5000.0).await.is_none() {
+        return;
+    }
+
+    let credit = c
+        .post(format!("{}/api/v1/aft/credits", base_url()))
+        .bearer_auth(&token)
+        .json(&json!({
+            "originator_account_id": account,
+            "amount": 250.00,
+            "counterparty_institution": "003",
+            "counterparty_transit": "12345",
+            "counterparty_account": "9876543",
+            "payee_name": "Linkage Payroll",
+            "idempotency_key": format!("aft-{}", Uuid::new_v4()),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(credit.status().is_success(), "aft credit: {}", credit.status());
+    let cv: Value = credit.json().await.unwrap();
+    let entry_id = Uuid::parse_str(cv["entry_id"].as_str().expect("entry_id")).unwrap();
+
+    // The decision exists now, parked on the entry — settlement only executes it.
+    let Some(pool) = test_db().await else { return };
+    let (stored,): (Option<Value>,) =
+        sqlx::query_as("SELECT metadata FROM aft_entries WHERE entry_id = $1")
+            .bind(entry_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let originated_op = stored
+        .as_ref()
+        .and_then(|m| m.get("fraud"))
+        .and_then(|f| f.get("operation_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("origination must record its linkage: {stored:?}"))
+        .to_string();
+
+    // Submit and settle the batch the entry landed in.
+    let (batch_id,): (Uuid,) =
+        sqlx::query_as("SELECT batch_id FROM aft_entries WHERE entry_id = $1")
+            .bind(entry_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let svc = service_token(&c).await;
+    let submit = c
+        .post(format!("{}/api/v1/aft/batches/{batch_id}/submit", base_url()))
+        .bearer_auth(&svc)
+        .send()
+        .await
+        .unwrap();
+    assert!(submit.status().is_success(), "submit: {}", submit.status());
+    let settle = c
+        .post(format!("{}/api/v1/aft/network/settle/{batch_id}", base_url()))
+        .bearer_auth(&svc)
+        .send()
+        .await
+        .unwrap();
+    assert!(settle.status().is_success(), "settle: {}", settle.status());
+
+    let (settle_txn,): (Option<Uuid>,) =
+        sqlx::query_as("SELECT settle_transaction_id FROM aft_entries WHERE entry_id = $1")
+            .bind(entry_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let settle_txn = settle_txn.expect("settlement must record its transaction");
+
+    let link = fraud_link(&c, &svc, settle_txn).await;
+    assert_eq!(link.status().as_u16(), 200);
+    let link: Value = link.json().await.unwrap();
+    let op_id = link["operation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a settled AFT movement must resolve: {link}"));
+
+    assert_eq!(
+        op_id, originated_op,
+        "settlement must carry the origination decision, not a new screening"
+    );
+
     let Some(engine) = engine_db().await else { return };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())

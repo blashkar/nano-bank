@@ -52,6 +52,9 @@ RECALL_ACCEPT_PROB = float(os.getenv("RECALL_ACCEPT_PROB", "0.7"))
 MIN_AMOUNT = float(os.getenv("MIN_AMOUNT", "10000"))
 MAX_AMOUNT = float(os.getenv("MAX_AMOUNT", "500000"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+# Bounded run for demo/test-only seeding: stop after this many poll cycles.
+# 0 = run forever (the default; how the live test harness runs it).
+MAX_CYCLES = int(os.getenv("MAX_CYCLES", "0"))
 
 DB = dict(
     host=os.getenv("DB_HOST", "::1"),
@@ -243,8 +246,9 @@ def main() -> int:
         f"inbound_prob={INBOUND_PROB} recall_prob={RECALL_PROB}")
     wait_for_api()
     session = requests.Session()
+    cycles = 0
     try:
-        while True:
+        while MAX_CYCLES == 0 or cycles < MAX_CYCLES:
             for wire_id in sent_wires():
                 settle_wire(session, wire_id)
             for recall_id in open_outbound_recalls():
@@ -257,6 +261,7 @@ def main() -> int:
                 wire_id = settled_inbound_wire()
                 if wire_id:
                     request_inbound_recall(session, wire_id)
+            cycles += 1
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")

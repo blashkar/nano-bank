@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coo
+  namespace: nano-bank
+  labels: { app: coo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: coo } }
+  template:
+    metadata: { labels: { app: coo } }
+    spec:
+      containers:
+      - name: coo
+        image: nano-coo:dev
+        imagePullPolicy: Never
+        ports: [ { containerPort: 8093 } ]
+        envFrom:
+        - secretRef: { name: nano-agent-secrets }   # provides OLLAMA_API_KEY
+        env:
+        - { name: OPERATIONS_MCP_URL, value: http://operations-mcp:8092/mcp }
+        - { name: OLLAMA_BASE_URL,    value: https://ollama.com/v1 }
+        - { name: COO_MODEL,          value: glm-5.2 }
+        - { name: API_PORT,           value: "8093" }
+        # Durable memory is best-effort: if this Qdrant is absent the agent still
+        # answers from live tools (SafeMemory degrades to no-op).
+        - { name: QDRANT_URL,         value: http://agent-qdrant:6333 }
+        - { name: MEMORY_NAMESPACE,   value: coo }
+        # Liveness hits the cheap /livez (no model inference); readiness uses
+        # /health (dependency probes incl. a real GLM round-trip), so a slow
+        # model gates traffic without ever restarting a healthy pod.
+        livenessProbe:
+          httpGet: { path: /livez, port: 8093 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet: { path: /health, port: 8093 }
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coo
+  namespace: nano-bank
+spec:
+  selector: { app: coo }
+  ports: [ { port: 8093, targetPort: 8093 } ]

@@ -46,6 +46,9 @@ CAPTURE_PROB = float(os.getenv("CAPTURE_PROB", "0.9"))
 MIN_AMOUNT = float(os.getenv("MIN_AMOUNT", "5"))
 MAX_AMOUNT = float(os.getenv("MAX_AMOUNT", "500"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+# Bounded run for demo/test-only seeding: stop after this many work cycles.
+# 0 = run forever (the default; how the live test harness runs it).
+MAX_CYCLES = int(os.getenv("MAX_CYCLES", "0"))
 
 DB = dict(
     host=os.getenv("DB_HOST", "::1"),
@@ -205,8 +208,9 @@ def main() -> int:
     session = requests.Session()
     last_settle = time.monotonic()
     waiting_logged = False
+    cycles = 0
     try:
-        while True:
+        while MAX_CYCLES == 0 or cycles < MAX_CYCLES:
             card_id = pick_card()
             if not card_id:
                 if not waiting_logged:
@@ -234,6 +238,7 @@ def main() -> int:
                 settle(session)
                 last_settle = time.monotonic()
 
+            cycles += 1
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")
