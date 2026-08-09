@@ -768,7 +768,11 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .send()
         .await
         .unwrap();
-    assert!(sent.status().is_success(), "interac send: {}", sent.status());
+    assert!(
+        sent.status().is_success(),
+        "interac send: {}",
+        sent.status()
+    );
 
     // The rail hands back an `etransfer_id`; the row that was screened is the
     // `interac_hold` it wrote through `new_txn`.
@@ -790,13 +794,18 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .unwrap_or_else(|| panic!("a screened rail movement must resolve: {link}"));
 
     // It has to be the decision the ENGINE recorded, not just a well-formed id.
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 /// A settled **AFT** movement resolves to the decision made at origination (#54).
@@ -839,7 +848,11 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
         .send()
         .await
         .unwrap();
-    assert!(credit.status().is_success(), "aft credit: {}", credit.status());
+    assert!(
+        credit.status().is_success(),
+        "aft credit: {}",
+        credit.status()
+    );
     let cv: Value = credit.json().await.unwrap();
     let entry_id = Uuid::parse_str(cv["entry_id"].as_str().expect("entry_id")).unwrap();
 
@@ -868,14 +881,20 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
             .unwrap();
     let svc = service_token(&c).await;
     let submit = c
-        .post(format!("{}/api/v1/aft/batches/{batch_id}/submit", base_url()))
+        .post(format!(
+            "{}/api/v1/aft/batches/{batch_id}/submit",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
         .unwrap();
     assert!(submit.status().is_success(), "submit: {}", submit.status());
     let settle = c
-        .post(format!("{}/api/v1/aft/network/settle/{batch_id}", base_url()))
+        .post(format!(
+            "{}/api/v1/aft/network/settle/{batch_id}",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
@@ -902,13 +921,18 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
         "settlement must carry the origination decision, not a new screening"
     );
 
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 /// A captured **card purchase** resolves to the decision made at authorize (#54).
@@ -998,11 +1022,142 @@ async fn fraud_link_resolves_a_captured_card_purchase() {
         "the purchase must carry the decision from authorize, not a new screening"
     );
 
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
+}
+
+async fn rail_fraud_link(
+    c: &reqwest::Client,
+    token: &str,
+    rail: &str,
+    rail_id: Uuid,
+) -> reqwest::Response {
+    c.get(format!(
+        "{}/api/v1/fraud/admin/rails/{rail}/{rail_id}/fraud-link",
+        base_url()
+    ))
+    .bearer_auth(token)
+    .send()
+    .await
+    .unwrap()
+}
+
+/// Tier 2 — engine mode: a rail id resolves to the same linkage its
+/// `transactions` id would (#62).
+///
+/// #53 made Interac and Lynx *record* the linkage; this is what makes it
+/// reachable. The caller of a rail is handed an `etransfer_id`, never the
+/// `transactions` id — so before this endpoint the linkage was stored and
+/// unreachable at the same time, and the corpus generator had to route every
+/// movement through the plain transfer rail to be able to label anything.
+///
+/// Asserted as *equal to* the transaction-keyed answer rather than merely
+/// non-null: two endpoints answering differently for one money row is worse
+/// than one of them not existing, because a label would attach to whichever the
+/// caller happened to ask.
+#[tokio::test]
+async fn rail_fraud_link_matches_the_transaction_keyed_answer() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+    let account = create_account(&c, &token).await;
+    if seed_deposit(&c, &token, account, 5000.0).await.is_none() {
+        return;
+    }
+
+    let sent = c
+        .post(format!("{}/api/v1/interac/etransfers", base_url()))
+        .bearer_auth(&token)
+        .json(&json!({
+            "from_account_id": account,
+            "amount": 60.00,
+            "recipient_handle_type": "email",
+            "recipient_handle_value": format!("rail-{}@example.com", Uuid::new_v4()),
+            "security_question": "q",
+            "security_answer": "a",
+            "idempotency_key": format!("rail-{}", Uuid::new_v4()),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        sent.status().is_success(),
+        "interac send: {}",
+        sent.status()
+    );
+    let body: Value = sent.json().await.unwrap();
+    let etid = Uuid::parse_str(body["etransfer_id"].as_str().unwrap()).unwrap();
+
+    let svc = service_token(&c).await;
+    let by_rail = rail_fraud_link(&c, &svc, "interac", etid).await;
+    assert_eq!(by_rail.status().as_u16(), 200);
+    let by_rail: Value = by_rail.json().await.unwrap();
+
+    let op_id = by_rail["operation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a screened e-transfer must resolve: {by_rail}"));
+
+    // Same row, asked the other way.
+    let txn_id = Uuid::parse_str(by_rail["transaction_id"].as_str().unwrap()).unwrap();
+    let by_txn: Value = fraud_link(&c, &svc, txn_id).await.json().await.unwrap();
+    assert_eq!(by_rail, by_txn, "the two entry points must not disagree");
+
+    // And it names a decision the engine actually recorded.
+    let Some(engine) = engine_db().await else {
+        return;
+    };
+    let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
+        .bind(Uuid::parse_str(op_id).unwrap())
+        .fetch_one(&engine)
+        .await
+        .unwrap();
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
+}
+
+/// An unknown rail id is a 404, not a nulled 200.
+///
+/// The distinction matters and is not the same as the transaction endpoint's:
+/// there, nulls mean "this row was not screened", a real answer. Here there is
+/// no row at all, so nulls would invite a caller to keep retrying for a linkage
+/// that is never going to appear — the ambiguity #52 was filed over.
+#[tokio::test]
+async fn rail_fraud_link_404s_for_an_unknown_rail_id() {
+    let c = client();
+    require_stack!(&c);
+    let svc = service_token(&c).await;
+    for rail in ["interac", "lynx"] {
+        let r = rail_fraud_link(&c, &svc, rail, Uuid::new_v4()).await;
+        assert_eq!(r.status().as_u16(), 404, "{rail} unknown id");
+    }
+}
+
+/// The rail lookups sit on the service plane, like the transaction one (#46).
+#[tokio::test]
+async fn rail_fraud_link_refuses_a_customer_token() {
+    let c = client();
+    require_stack!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+
+    let r = rail_fraud_link(&c, &token, "interac", Uuid::new_v4()).await;
+    assert!(
+        matches!(r.status().as_u16(), 401 | 403),
+        "a customer token must not reach a rail linkage: {}",
+        r.status()
+    );
 }
