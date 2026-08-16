@@ -76,7 +76,11 @@ async fn create_customer(c: &reqwest::Client) -> (Uuid, String) {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "create customer: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "create customer: {}",
+        resp.status()
+    );
     let v: Value = resp.json().await.unwrap();
     let id = Uuid::parse_str(v["customer_id"].as_str().unwrap()).unwrap();
     (id, email)
@@ -109,14 +113,22 @@ async fn create_account(c: &reqwest::Client, token: &str, account_type: &str) ->
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "create account: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "create account: {}",
+        resp.status()
+    );
     let v: Value = resp.json().await.unwrap();
     Uuid::parse_str(v["account_id"].as_str().unwrap()).unwrap()
 }
 
 async fn balance(c: &reqwest::Client, token: &str, account_id: Uuid) -> f64 {
     let v: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), account_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            account_id
+        ))
         .bearer_auth(token)
         .send()
         .await
@@ -189,7 +201,11 @@ async fn send_requires_auth() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 401, "unauthenticated send must be 401");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "unauthenticated send must be 401"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +233,11 @@ async fn send_to_autodeposit_handle_credits_recipient() {
         json!({ "handle_type": "email", "handle_value": handle, "deposit_account_id": b_acct }),
     )
     .await;
-    assert!(reg.status().is_success(), "register autodeposit: {}", reg.status());
+    assert!(
+        reg.status().is_success(),
+        "register autodeposit: {}",
+        reg.status()
+    );
 
     let resp = send_etransfer(
         &c,
@@ -238,8 +258,14 @@ async fn send_to_autodeposit_handle_credits_recipient() {
 
 /// Send an "available" external transfer with a security Q&A; returns its id, or
 /// `None` if the core is down.
-async fn send_available(c: &reqwest::Client, a_token: &str, from: Uuid, amount: f64,
-                        handle: &str, answer: &str) -> Option<Uuid> {
+async fn send_available(
+    c: &reqwest::Client,
+    a_token: &str,
+    from: Uuid,
+    amount: f64,
+    handle: &str,
+    answer: &str,
+) -> Option<Uuid> {
     let resp = send_etransfer(
         c,
         a_token,
@@ -254,7 +280,10 @@ async fn send_available(c: &reqwest::Client, a_token: &str, from: Uuid, amount: 
     }
     assert!(resp.status().is_success(), "send: {}", resp.status());
     let v: Value = resp.json().await.unwrap();
-    assert_eq!(v["status"], "available", "held transfer should be available: {v}");
+    assert_eq!(
+        v["status"], "available",
+        "held transfer should be available: {v}"
+    );
     Some(Uuid::parse_str(v["etransfer_id"].as_str().unwrap()).unwrap())
 }
 
@@ -285,7 +314,10 @@ async fn send_then_claim_with_correct_answer_deposits() {
     .await;
     assert!(resp.status().is_success(), "claim: {}", resp.status());
     let claimed: Value = resp.json().await.unwrap();
-    assert_eq!(claimed["status"], "deposited", "claim should deposit: {claimed}");
+    assert_eq!(
+        claimed["status"], "deposited",
+        "claim should deposit: {claimed}"
+    );
     assert_eq!(balance(&c, &b_token, b_acct).await, 75.0);
 
     // Claiming records B as the recipient, so B retains the receipt: a GET by B
@@ -297,9 +329,16 @@ async fn send_then_claim_with_correct_answer_deposits() {
         .send()
         .await
         .unwrap();
-    assert_eq!(get.status().as_u16(), 200, "claimant should see the transfer after claiming");
+    assert_eq!(
+        get.status().as_u16(),
+        200,
+        "claimant should see the transfer after claiming"
+    );
     let seen: Value = get.json().await.unwrap();
-    assert_eq!(seen["status"], "deposited", "claimant's GET should show deposited: {seen}");
+    assert_eq!(
+        seen["status"], "deposited",
+        "claimant's GET should show deposited: {seen}"
+    );
 
     // ...and it appears in B's e-Transfer history.
     let list: Value = c
@@ -312,7 +351,10 @@ async fn send_then_claim_with_correct_answer_deposits() {
         .await
         .unwrap();
     assert!(
-        list.as_array().unwrap().iter().any(|e| e["etransfer_id"] == claimed["etransfer_id"]),
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["etransfer_id"] == claimed["etransfer_id"]),
         "claimed transfer should appear in B's list: {list}"
     );
 }
@@ -384,7 +426,11 @@ async fn decline_by_non_recipient_is_404() {
         json!({}),
     )
     .await;
-    assert_eq!(resp.status().as_u16(), 404, "non-recipient decline must be 404");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "non-recipient decline must be 404"
+    );
     // The transfer is untouched (still available).
     assert_eq!(get_etransfer(&c, &a_token, id).await["status"], "available");
 }
@@ -423,7 +469,11 @@ async fn cancel_by_non_sender_is_404_but_sender_can_cancel() {
         json!({}),
     )
     .await;
-    assert!(resp.status().is_success(), "sender cancel: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "sender cancel: {}",
+        resp.status()
+    );
     assert_eq!(get_etransfer(&c, &a_token, id).await["status"], "cancelled");
     // Funds returned: started 500; the send debits the $30 hold plus the flat
     // $1.50 outgoing e-transfer fee (500 -> 468.50); cancelling refunds the $30
@@ -509,11 +559,14 @@ async fn seed_notification(
 }
 
 async fn flush_notifications(c: &reqwest::Client, token: &str) -> reqwest::Response {
-    c.post(format!("{}/api/v1/interac/admin/flush-notifications", base_url()))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap()
+    c.post(format!(
+        "{}/api/v1/interac/admin/flush-notifications",
+        base_url()
+    ))
+    .bearer_auth(token)
+    .send()
+    .await
+    .unwrap()
 }
 
 /// One flush covers both properties, so it stays deterministic on the shared
@@ -550,7 +603,10 @@ async fn flush_notifications_delivers_fresh_and_dead_letters_exhausted() {
     .fetch_one(&db)
     .await
     .unwrap();
-    assert!(delivered, "fresh notification should be delivered after a flush");
+    assert!(
+        delivered,
+        "fresh notification should be delivered after a flush"
+    );
     assert!(has_ts, "delivered_at should be stamped");
 
     let (delivered, attempts): (bool, i32) = sqlx::query_as(
@@ -573,5 +629,9 @@ async fn flush_notifications_rejects_customer_token() {
     require_stack!(&c);
     let (_id, token) = session(&c).await;
     let resp = flush_notifications(&c, &token).await;
-    assert_eq!(resp.status().as_u16(), 403, "customer token must be 403 on the admin plane");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "customer token must be 403 on the admin plane"
+    );
 }

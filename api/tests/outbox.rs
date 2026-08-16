@@ -167,7 +167,10 @@ async fn concurrent_claims_are_exactly_once() {
     .unwrap();
 
     assert_eq!(double, 0, "a row was incremented more than once");
-    assert_eq!(claimed_once, K as i64, "every seeded row claimed exactly once");
+    assert_eq!(
+        claimed_once, K as i64,
+        "every seeded row claimed exactly once"
+    );
     assert_eq!(untouched, 0, "no row left unclaimed");
 
     drop_table(&pool, &table).await;

@@ -345,6 +345,40 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
         "CREATE INDEX IF NOT EXISTS idx_decline_events_channel ON decline_events (channel, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_decline_events_category \
          ON decline_events (reason_category, occurred_at)",
+        // Held customer movements awaiting a reviewer's verdict (canonical DDL:
+        // 16_pending_reviews.sql). Self-healed like the tables above so a DB
+        // predating it starts parking on next boot rather than 500ing the two
+        // rails that now park. Unlike the decline log this is NOT best-effort: a
+        // park that fails to write must fail the request, or the customer is
+        // told "under review" about a review that does not exist.
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_reviews (
+            review_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            customer_id     UUID NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+            account_id      UUID NOT NULL REFERENCES accounts(account_id),
+            rail            TEXT NOT NULL CHECK (rail IN ('transfer', 'interac_etransfer')),
+            amount          DECIMAL(15,2) NOT NULL CHECK (amount > 0),
+            idempotency_key VARCHAR(128),
+            movement        JSONB NOT NULL,
+            operation_id    UUID NOT NULL UNIQUE,
+            decision_id     UUID,
+            status          VARCHAR(20) NOT NULL DEFAULT 'held'
+                            CHECK (status IN ('held','executing','executed','refused','expired')),
+            transaction_id  UUID,
+            resolution_note TEXT,
+            claimed_at      TIMESTAMP WITH TIME ZONE,
+            created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+            resolved_at     TIMESTAMP WITH TIME ZONE
+        )
+        "#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_reviews_open \
+         ON pending_reviews (customer_id, idempotency_key) \
+         WHERE status IN ('held', 'executing') AND idempotency_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_pending_reviews_customer \
+         ON pending_reviews (customer_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_pending_reviews_waiting \
+         ON pending_reviews (created_at) WHERE status = 'held'",
         // Hash-chained agent-action ledger (canonical DDL: 14_agent_action_ledger.sql).
         // Unlike the decline log this is NOT best-effort — the COO levers surface a
         // failed audit to the caller — so a DB predating the ledger would 500 every

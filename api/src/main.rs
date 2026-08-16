@@ -188,6 +188,10 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         .nest("/api/v1/agent", handlers::agent_api::agent_api_routes())
         // Step-up approvals (Phase 3): the customer resolves parked transfers
         .nest("/api/v1/approvals", handlers::approvals::approval_routes())
+        // Fraud reviews: the customer follows a movement the engine held. The
+        // neighbouring plane to approvals, and deliberately separate — there a
+        // principal grants permission, here a reviewer adjudicates risk.
+        .nest("/api/v1/reviews", handlers::reviews::review_routes())
         // Back-office read plane: service-token reads *across* customers, for a
         // CRM or support console. Read-only by design — see the module docs.
         .nest(

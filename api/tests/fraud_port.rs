@@ -768,7 +768,11 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .send()
         .await
         .unwrap();
-    assert!(sent.status().is_success(), "interac send: {}", sent.status());
+    assert!(
+        sent.status().is_success(),
+        "interac send: {}",
+        sent.status()
+    );
 
     // The rail hands back an `etransfer_id`; the row that was screened is the
     // `interac_hold` it wrote through `new_txn`.
@@ -790,13 +794,18 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .unwrap_or_else(|| panic!("a screened rail movement must resolve: {link}"));
 
     // It has to be the decision the ENGINE recorded, not just a well-formed id.
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 /// A settled **AFT** movement resolves to the decision made at origination (#54).
@@ -839,7 +848,11 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
         .send()
         .await
         .unwrap();
-    assert!(credit.status().is_success(), "aft credit: {}", credit.status());
+    assert!(
+        credit.status().is_success(),
+        "aft credit: {}",
+        credit.status()
+    );
     let cv: Value = credit.json().await.unwrap();
     let entry_id = Uuid::parse_str(cv["entry_id"].as_str().expect("entry_id")).unwrap();
 
@@ -868,14 +881,20 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
             .unwrap();
     let svc = service_token(&c).await;
     let submit = c
-        .post(format!("{}/api/v1/aft/batches/{batch_id}/submit", base_url()))
+        .post(format!(
+            "{}/api/v1/aft/batches/{batch_id}/submit",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
         .unwrap();
     assert!(submit.status().is_success(), "submit: {}", submit.status());
     let settle = c
-        .post(format!("{}/api/v1/aft/network/settle/{batch_id}", base_url()))
+        .post(format!(
+            "{}/api/v1/aft/network/settle/{batch_id}",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
@@ -902,13 +921,18 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
         "settlement must carry the origination decision, not a new screening"
     );
 
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 /// A captured **card purchase** resolves to the decision made at authorize (#54).
@@ -998,13 +1022,18 @@ async fn fraud_link_resolves_a_captured_card_purchase() {
         "the purchase must carry the decision from authorize, not a new screening"
     );
 
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,10 +1087,17 @@ async fn rail_fraud_link_resolves_an_interac_etransfer() {
         .send()
         .await
         .unwrap();
-    assert!(sent.status().is_success(), "interac send: {}", sent.status());
-    let etransfer_id =
-        Uuid::parse_str(sent.json::<Value>().await.unwrap()["etransfer_id"].as_str().unwrap())
-            .unwrap();
+    assert!(
+        sent.status().is_success(),
+        "interac send: {}",
+        sent.status()
+    );
+    let etransfer_id = Uuid::parse_str(
+        sent.json::<Value>().await.unwrap()["etransfer_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
 
     let svc = service_token(&c).await;
     let link = fraud_link_rail(&c, &svc, "interac", etransfer_id).await;
@@ -1202,5 +1238,8 @@ async fn assert_engine_decision_exists(_c: &reqwest::Client, op_id: &str) {
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }

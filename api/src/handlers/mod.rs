@@ -7,7 +7,6 @@ pub mod app;
 pub mod approvals;
 pub mod auth;
 pub mod back_office;
-pub mod ops_levers;
 pub mod cards;
 pub mod customers;
 pub mod declines;
@@ -20,6 +19,8 @@ pub mod interac_payees;
 pub mod ledger;
 pub mod lynx;
 pub mod mandates;
+pub mod ops_levers;
+pub mod reviews;
 pub mod security;
 pub mod transactions;
 

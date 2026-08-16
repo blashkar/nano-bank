@@ -127,6 +127,19 @@ pub struct FraudSettings {
     /// the other side); it is a backfill affordance, nothing more.
     #[serde(default)]
     pub accept_simulated_time: bool,
+    /// How long a held movement stays parked before it expires, declines and
+    /// releases — v2 §7 names the expiry explicitly.
+    ///
+    /// Well above §14's 15-minute review SLA on purpose: expiry is the backstop
+    /// for a review that never happened, not the deadline the reviewer works
+    /// to. Setting it at the SLA would turn every breached review into a
+    /// declined customer rather than a late one.
+    #[serde(default = "default_review_ttl_minutes")]
+    pub review_ttl_minutes: i64,
+}
+
+fn default_review_ttl_minutes() -> i64 {
+    120
 }
 
 fn default_fraud_backend() -> String {
@@ -159,6 +172,7 @@ impl Default for FraudSettings {
             service_token: String::new(),
             outcomes_timeout_ms: default_outcomes_timeout_ms(),
             accept_simulated_time: false,
+            review_ttl_minutes: default_review_ttl_minutes(),
         }
     }
 }

@@ -196,8 +196,16 @@ mod tests {
             (Account::FeeIncome, "FEE_INCOME", "0000800300"),
             (Account::InterestExpense, "INT_EXPENSE", "0000400100"),
             (Account::OperatingExpense, "OPEX", "0000400200"),
-            (Account::AccruedInterestReceivable, "ACCR_INT_RECV", "0000141900"),
-            (Account::AccruedInterestPayable, "ACCR_INT_PAY", "0000220000"),
+            (
+                Account::AccruedInterestReceivable,
+                "ACCR_INT_RECV",
+                "0000141900",
+            ),
+            (
+                Account::AccruedInterestPayable,
+                "ACCR_INT_PAY",
+                "0000220000",
+            ),
         ];
         for (role, modern, legacy) in cases {
             assert_eq!(role.modern_code(), modern, "modern_code for {role:?}");

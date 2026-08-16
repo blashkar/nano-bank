@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::json;
 
-use super::{FraudAction, FraudCheck, FraudCheckError, FraudDecision, FraudRequest};
+use super::{
+    CaseStatus, Disposition, FraudAction, FraudCheck, FraudCheckError, FraudDecision, FraudRequest,
+};
 
 const BREAKER_THRESHOLD: u32 = 5;
 const BREAKER_OPEN_SECS: u64 = 10;
@@ -285,6 +287,79 @@ impl FraudCheck for EngineFraudCheck {
             status: status.as_u16(),
             body,
         })
+    }
+
+    async fn disposition(&self, operation_id: uuid::Uuid) -> Result<Disposition, FraudCheckError> {
+        // Guarded by the DECISIONS breaker, not the telemetry one: this is a
+        // read about a specific held movement with a customer waiting on the
+        // answer, so it shares the request path's urgency and its outage.
+        if self.decisions_breaker.open() {
+            return Err(FraudCheckError::Transport("circuit open".to_string()));
+        }
+        let sent = self
+            .http
+            .get(format!(
+                "{}/v1/decisions/{operation_id}/disposition",
+                self.base_url
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await;
+        let resp = match sent {
+            Ok(r) => r,
+            Err(e) => {
+                self.decisions_breaker.record_failure();
+                return Err(if e.is_timeout() {
+                    FraudCheckError::Timeout
+                } else {
+                    FraudCheckError::Transport(e.to_string())
+                });
+            }
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            if status.is_server_error() {
+                self.decisions_breaker.record_failure();
+                return Err(FraudCheckError::Transport(format!(
+                    "engine {status}: {body}"
+                )));
+            }
+            return Err(FraudCheckError::Backend {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        self.decisions_breaker.record_success();
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| FraudCheckError::Transport(e.to_string()))?;
+        let raw = body
+            .get("case_status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Ok(Disposition {
+            action: body
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            case_status: raw.as_deref().map(parse_case_status),
+            raw_case_status: raw,
+        })
+    }
+}
+
+/// An unknown verdict maps to [`CaseStatus::Unrecognized`], never to `Cleared`.
+/// The engine owns this vocabulary and may grow it; a bank that guessed on a
+/// word it did not know would move money on a verdict it could not read.
+fn parse_case_status(status: &str) -> CaseStatus {
+    match status {
+        "open" => CaseStatus::Open,
+        "cleared" => CaseStatus::Cleared,
+        "confirmed_fraud" => CaseStatus::ConfirmedFraud,
+        _ => CaseStatus::Unrecognized,
     }
 }
 

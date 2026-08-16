@@ -243,7 +243,11 @@ async fn authorize(
             },
         )
         .await;
-        match screened {
+        // A card authorization cannot park: it is synchronous and the terminal
+        // is waiting, so there is nobody to hand a review id to. `into_refusal`
+        // collapses a hold back to the refusal it has always been here — the
+        // same mapping the gate used before parking existed, not a second one.
+        match screened.and_then(crate::fraud::gate::Screened::into_refusal) {
             Ok(link) => fraud_link = Some(link),
             Err(AppError::TransactionDeclined) | Err(AppError::TransactionUnderReview(_)) => {
                 record_decline(

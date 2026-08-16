@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use axum::response::IntoResponse;
 use axum::Json as AxumJson;
 use axum::{
     extract::{Path, Query, State},
@@ -22,7 +23,7 @@ use crate::handlers::declines::{record_decline, DeclineEvent, DeclineReason};
 use crate::handlers::AppState;
 use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
 use crate::models::interac::{
-    ClaimEtransferRequest, EtransferResponse, HandleResponse, InboundEtransferRequest,
+    ClaimEtransferRequest, EtransferResponse, HandleResponse, HandleType, InboundEtransferRequest,
     RegisterAutodepositRequest, SendEtransferRequest, SettleEtransferRequest,
 };
 use crate::outbox::OutboxClaim;
@@ -75,7 +76,12 @@ async fn send_etransfer(
     State(state): State<AppState>,
     caller: AuthenticatedCustomer,
     AxumJson(req): AxumJson<SendEtransferRequest>,
-) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
+    // Two shapes, so the erased `Response`: **201 + the e-Transfer** when it
+    // sends, **202 + a review id** when the engine holds it. A held send has no
+    // `etransfer_id` to report — nothing was created — so squeezing it into
+    // `EtransferResponse` would mean a row of nulls that a client could not
+    // tell from a broken send.
+) -> Result<axum::response::Response, AppError> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
     if amount > max_amount(&state) {
@@ -98,7 +104,6 @@ async fn send_etransfer(
         )));
     }
     let recipient_handle = normalize_handle(req.recipient_handle_type, &req.recipient_handle_value);
-    let rail = resolve_interac(&state).await?;
 
     // Idempotency replay: same (sender, key) returns the original. Checked
     // BEFORE screening so a replayed retry returns the cached result without
@@ -106,11 +111,46 @@ async fn send_etransfer(
     // fail-closed on an already-sent e-Transfer).
     if let Some(key) = &req.idempotency_key {
         if let Some(existing) = load_etransfer_by_key(&state, caller.customer_id, key).await? {
-            return Ok((StatusCode::CREATED, Json(existing)));
+            return Ok((StatusCode::CREATED, Json(existing)).into_response());
         }
     }
 
-    let fraud_link = crate::fraud::gate::screen(
+    // Resolve the recipient and hash the security answer BEFORE screening.
+    //
+    // This used to sit after the screen call, and the order matters now that a
+    // hold can park: a parked send must carry everything needed to complete it
+    // later, and it must carry the security answer **already hashed** — a
+    // parked row is not a place to keep a plaintext secret. Doing it here also
+    // means a request missing its required security question is a 400 before
+    // the engine is called, instead of after.
+    let registration = lookup_handle(&state, &recipient_handle).await?;
+
+    // Non-autodeposit transfers require a security question + answer.
+    let (question, answer_hash) = if registration.as_ref().and_then(|(_, ad)| *ad).is_some() {
+        (None, None)
+    } else {
+        let q = req.security_question.clone().ok_or_else(|| {
+            AppError::BadRequest("security_question required (recipient has no autodeposit)".into())
+        })?;
+        let a = req
+            .security_answer
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("security_answer required".into()))?;
+        (Some(q), Some(hash_password(&a.to_lowercase())?))
+    };
+
+    let resolved = ResolvedSend {
+        from_account_id: req.from_account_id,
+        amount,
+        recipient_handle_type: req.recipient_handle_type,
+        recipient_handle: recipient_handle.clone(),
+        question,
+        answer_hash,
+        memo: req.memo.clone(),
+        idempotency_key: req.idempotency_key.clone(),
+    };
+
+    let screened = crate::fraud::gate::screen(
         &state,
         crate::fraud::gate::ScreenInput {
             kind: "interac_etransfer",
@@ -131,30 +171,92 @@ async fn send_etransfer(
     .await?;
     // fraud_link is settled after the send commits below (metadata linkage
     // lives in the engine's decision log; rails keep their own rows).
+    let fraud_link = match screened {
+        crate::fraud::gate::Screened::Cleared(link) => link,
+        // Held: park the send and hand back a review id. No money has moved —
+        // the DB transaction below has not opened — so there is nothing to undo.
+        crate::fraud::gate::Screened::Held { link, .. } => {
+            let parked = crate::handlers::reviews::park(
+                &state,
+                crate::handlers::reviews::ParkRequest {
+                    customer_id: caller.customer_id,
+                    account_id: req.from_account_id,
+                    rail: "interac_etransfer",
+                    amount,
+                    idempotency_key: req.idempotency_key.as_deref(),
+                    movement: serde_json::to_value(&resolved)
+                        .map_err(|e| AppError::Internal(e.to_string()))?,
+                    link: &link,
+                },
+            )
+            .await?;
+            return Ok((StatusCode::ACCEPTED, Json(parked)).into_response());
+        }
+    };
 
-    // Look up whether the recipient handle is registered here, and autodeposit.
-    let registration = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+    let (etransfer_id, _) =
+        send_resolved(&state, caller.customer_id, &resolved, &fraud_link).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(load_etransfer(&state, etransfer_id).await?),
+    )
+        .into_response())
+}
+
+/// An e-Transfer with its recipient resolved and its secret already hashed —
+/// everything needed to send it, whether that happens now or after a reviewer
+/// clears it. Serialized into `pending_reviews.movement` when it parks.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ResolvedSend {
+    pub from_account_id: Uuid,
+    pub amount: Decimal,
+    pub recipient_handle_type: HandleType,
+    /// Already normalized (see `normalize_handle`).
+    pub recipient_handle: String,
+    pub question: Option<String>,
+    /// A hash, never the answer. See the comment at the call site.
+    pub answer_hash: Option<String>,
+    pub memo: Option<String>,
+    pub idempotency_key: Option<String>,
+}
+
+async fn lookup_handle(
+    state: &AppState,
+    handle: &str,
+) -> Result<Option<(Uuid, Option<Uuid>)>, AppError> {
+    sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
         "SELECT customer_id, autodeposit_account_id FROM interac_handles \
          WHERE handle_value=$1 AND active=TRUE",
     )
-    .bind(&recipient_handle)
+    .bind(handle)
     .fetch_optional(&state.pool)
-    .await?;
+    .await
+    .map_err(AppError::from)
+}
 
-    // Non-autodeposit transfers require a security question + answer.
+/// Send a resolved e-Transfer: the money half, shared by the live send above
+/// and the release of a movement a reviewer cleared.
+///
+/// Returns `(etransfer_id, hold_transaction_id)` — the release path records the
+/// money row, the send path renders the e-Transfer.
+///
+/// The recipient registration is looked up again here rather than carried in
+/// from the caller: between parking and release the recipient may have
+/// registered a handle or turned on autodeposit, and routing a released
+/// transfer on a stale answer would send it to the wrong place.
+pub(crate) async fn send_resolved(
+    state: &AppState,
+    caller_customer_id: Uuid,
+    req: &ResolvedSend,
+    fraud_link: &crate::fraud::gate::FraudLink,
+) -> Result<(Uuid, Uuid), AppError> {
+    let amount = req.amount;
+    let recipient_handle = req.recipient_handle.clone();
+    let rail = resolve_interac(state).await?;
+    let registration = lookup_handle(state, &recipient_handle).await?;
     let autodeposit = registration.as_ref().and_then(|(_, ad)| *ad);
-    let (question, answer_hash) = if autodeposit.is_some() {
-        (None, None)
-    } else {
-        let q = req.security_question.clone().ok_or_else(|| {
-            AppError::BadRequest("security_question required (recipient has no autodeposit)".into())
-        })?;
-        let a = req
-            .security_answer
-            .clone()
-            .ok_or_else(|| AppError::BadRequest("security_answer required".into()))?;
-        (Some(q), Some(hash_password(&a.to_lowercase())?))
-    };
+    let question = req.question.clone();
+    let answer_hash = req.answer_hash.clone();
 
     let mut tx = state.pool.begin().await?;
 
@@ -162,7 +264,7 @@ async fn send_etransfer(
     let sender = fetch_account_for_update(&mut tx, req.from_account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("account not found".into()))?;
-    if sender.customer_id != caller.customer_id {
+    if sender.customer_id != caller_customer_id {
         return Err(AppError::NotFound("account not found".into())); // 404, not 403
     }
     if amount > sender.available_balance {
@@ -190,7 +292,7 @@ async fn send_etransfer(
     zero_available(&mut tx, sender.account_id).await?;
     let hold = rail
         .hold(
-            &state,
+            state,
             &mut tx,
             sender.account_id,
             amount,
@@ -200,7 +302,7 @@ async fn send_etransfer(
     // Record which decision gated this movement, in the same transaction that
     // moves the money (#52). Without it the engine's ruling on this send is
     // unreachable and reads as "never screened".
-    crate::rails::common::tag_fraud(&mut tx, hold.transaction_id, &fraud_link).await?;
+    crate::rails::common::tag_fraud(&mut tx, hold.transaction_id, fraud_link).await?;
     recompute_available(&mut tx, sender.account_id).await?;
 
     // Create the etransfer row (outbound, held).
@@ -218,7 +320,7 @@ async fn send_etransfer(
         "#,
     )
     .bind(amount)
-    .bind(caller.customer_id)
+    .bind(caller_customer_id)
     .bind(sender.account_id)
     .bind(req.recipient_handle_type)
     .bind(&recipient_handle)
@@ -229,7 +331,7 @@ async fn send_etransfer(
     .bind(&req.memo)
     .bind(hold.transaction_id)
     .bind(&req.idempotency_key)
-    .bind(expiry_days(&state).to_string())
+    .bind(expiry_days(state).to_string())
     .fetch_one(&mut *tx)
     .await
     .map_err(idempotency_conflict)?;
@@ -240,7 +342,7 @@ async fn send_etransfer(
             // Autodeposit: release into their account immediately.
             let _ = recipient_customer;
             rail.release(
-                &state,
+                state,
                 &mut tx,
                 &hold,
                 Destination::Internal(deposit_acct),
@@ -293,21 +395,18 @@ async fn send_etransfer(
 
     // Charge the outgoing e-transfer fee (fee income), tagged, before commit.
     crate::handlers::finance::charge_etransfer_fee(
-        &state,
+        state,
         &mut tx,
         sender.account_id,
-        caller.customer_id,
+        caller_customer_id,
     )
     .await?;
 
     tx.commit().await?;
     // Movement committed — settle any deferred fail-open rescore as executed.
-    fraud_link.settle_rescore(&state, true);
+    fraud_link.settle_rescore(state, true);
     tracing::info!(%etransfer_id, status, "📨 e-Transfer sent");
-    Ok((
-        StatusCode::CREATED,
-        Json(load_etransfer(&state, etransfer_id).await?),
-    ))
+    Ok((etransfer_id, hold.transaction_id))
 }
 
 async fn set_available(tx: &mut crate::rails::PgTx<'_>, id: Uuid) -> Result<(), AppError> {

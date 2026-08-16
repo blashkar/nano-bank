@@ -259,7 +259,6 @@ fn origination_linkage(fraud: &crate::fraud::gate::FraudLink) -> Option<serde_js
         .then(|| serde_json::json!({ "fraud": fraud.metadata() }))
 }
 
-
 /// A CPA-005 file carried in a JSON body (network inbound / returns).
 #[derive(serde::Deserialize)]
 struct FileRequest {
@@ -459,7 +458,8 @@ async fn create_credit(
             agent: None,
         },
     )
-    .await?;
+    .await?
+    .into_refusal()?;
     let mut tx = state.pool.begin().await?;
     let batch_id = open_batch(&mut tx).await?;
     let entry_id: Uuid = sqlx::query_scalar(
@@ -574,7 +574,8 @@ async fn create_debit(
             agent: None,
         },
     )
-    .await?;
+    .await?
+    .into_refusal()?;
     let mut tx = state.pool.begin().await?;
     let batch_id = open_batch(&mut tx).await?;
     let entry_id: Uuid = sqlx::query_scalar(
