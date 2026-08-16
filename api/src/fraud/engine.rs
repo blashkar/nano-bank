@@ -72,6 +72,15 @@ pub struct EngineFraudCheck {
     /// Guards `/v1/outcomes`, the outbox drain. Deliberately separate — see
     /// [`Breaker`].
     telemetry_breaker: Breaker,
+    /// A customer polling a parked movement. Its own client and its own
+    /// breaker, for the same reason the two above are separate — and this one
+    /// was learned the hard way: it originally shared the decisions client, so
+    /// a read that is neither latency-critical nor money-gating ran on the
+    /// 150ms screening budget, timed out under concurrent load, and opened the
+    /// breaker in front of live transactions. A held movement's owner can wait
+    /// a second; a movement being screened cannot.
+    disposition_http: reqwest::Client,
+    disposition_breaker: Breaker,
 }
 
 impl EngineFraudCheck {
@@ -95,6 +104,11 @@ impl EngineFraudCheck {
                 .expect("reqwest telemetry client"),
             decisions_breaker: Breaker::default(),
             telemetry_breaker: Breaker::default(),
+            disposition_http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(outcomes_timeout_ms))
+                .build()
+                .expect("reqwest disposition client"),
+            disposition_breaker: Breaker::default(),
         }
     }
 
@@ -290,14 +304,11 @@ impl FraudCheck for EngineFraudCheck {
     }
 
     async fn disposition(&self, operation_id: uuid::Uuid) -> Result<Disposition, FraudCheckError> {
-        // Guarded by the DECISIONS breaker, not the telemetry one: this is a
-        // read about a specific held movement with a customer waiting on the
-        // answer, so it shares the request path's urgency and its outage.
-        if self.decisions_breaker.open() {
+        if self.disposition_breaker.open() {
             return Err(FraudCheckError::Transport("circuit open".to_string()));
         }
         let sent = self
-            .http
+            .disposition_http
             .get(format!(
                 "{}/v1/decisions/{operation_id}/disposition",
                 self.base_url
@@ -308,7 +319,7 @@ impl FraudCheck for EngineFraudCheck {
         let resp = match sent {
             Ok(r) => r,
             Err(e) => {
-                self.decisions_breaker.record_failure();
+                self.disposition_breaker.record_failure();
                 return Err(if e.is_timeout() {
                     FraudCheckError::Timeout
                 } else {
@@ -320,7 +331,7 @@ impl FraudCheck for EngineFraudCheck {
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             if status.is_server_error() {
-                self.decisions_breaker.record_failure();
+                self.disposition_breaker.record_failure();
                 return Err(FraudCheckError::Transport(format!(
                     "engine {status}: {body}"
                 )));
@@ -330,7 +341,7 @@ impl FraudCheck for EngineFraudCheck {
                 body,
             });
         }
-        self.decisions_breaker.record_success();
+        self.disposition_breaker.record_success();
         let body: serde_json::Value = resp
             .json()
             .await
