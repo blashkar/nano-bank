@@ -81,3 +81,24 @@ def notable_issues(issue_rows: list[dict], limit: int = 5) -> list[dict]:
                                                 str(r.get("created_at", ""))), reverse=True)
     return [{"id": r["id"], "customer_id": r["customer_id"], "category": r["category"],
              "severity": r["severity"], "summary": r["summary"]} for r in ordered[:limit]]
+
+
+def nps(scores: list[int]) -> dict:
+    """Net Promoter Score: promoter 9-10, passive 7-8, detractor 0-6;
+    score = round(%promoters - %detractors)."""
+    n = len(scores)
+    promoters = sum(1 for s in scores if s >= 9)
+    detractors = sum(1 for s in scores if s <= 6)
+    passives = n - promoters - detractors
+    return {"responses": n, "promoters": promoters, "passives": passives,
+            "detractors": detractors,
+            "score": round(pct(promoters, n) - pct(detractors, n))}
+
+
+def csat(scores: list[int]) -> dict:
+    """CSAT: % satisfied (score >= 4) plus the mean."""
+    n = len(scores)
+    satisfied = sum(1 for s in scores if s >= 4)
+    mean = round(sum(scores) / n, 2) if n else 0.0
+    return {"responses": n, "satisfied": satisfied,
+            "csat_rate": pct(satisfied, n), "mean": mean}

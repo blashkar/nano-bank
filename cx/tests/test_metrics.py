@@ -72,3 +72,25 @@ def test_notable_issues_high_severity_first_limited():
     out = m.notable_issues(rows, limit=1)
     assert len(out) == 1 and out[0]["id"] == "2"
     assert "customer_id" in out[0]  # scoped id retained for re-grounding
+
+
+def test_nps_score_and_buckets():
+    # 5 promoters(9,10,9,10,9), 2 passives(7,8), 3 detractors(0,3,6)
+    scores = [9, 10, 9, 10, 9, 7, 8, 0, 3, 6]
+    r = m.nps(scores)
+    assert r["responses"] == 10
+    assert r["promoters"] == 5 and r["passives"] == 2 and r["detractors"] == 3
+    assert r["score"] == 20   # round(50% - 30%)
+
+
+def test_nps_empty_is_zero():
+    r = m.nps([])
+    assert r["responses"] == 0 and r["score"] == 0
+
+
+def test_csat_rate_and_mean():
+    scores = [5, 4, 3, 4, 1]           # satisfied(>=4) = 3 of 5
+    r = m.csat(scores)
+    assert r["responses"] == 5 and r["satisfied"] == 3
+    assert r["csat_rate"] == 60.0
+    assert r["mean"] == 3.4
