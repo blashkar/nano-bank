@@ -19,10 +19,12 @@ CTX=kind-nano-bank
 NS=nano-bank
 
 DO_UP=1 DO_SEED=1
+EMIT_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --no-up)   DO_UP=0 ;;
-    --no-seed) DO_SEED=0 ;;
+    --no-up)      DO_UP=0 ;;
+    --no-seed)    DO_SEED=0 ;;
+    --emit-jsonl) EMIT_ARG="--emit-jsonl $2"; shift ;;
     *) echo "unknown flag: $1"; exit 2 ;;
   esac
   shift
@@ -93,4 +95,4 @@ fi
 
 echo "🎬 running the narrated CXO demo ..."
 CXO_API_URL=http://localhost:8098 PYTHONPATH="$PWD" \
-  "$VENV/bin/python" demos/09-cxo/drive.py
+  "$VENV/bin/python" demos/09-cxo/drive.py $EMIT_ARG
