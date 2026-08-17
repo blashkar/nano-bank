@@ -58,6 +58,10 @@ if [ "$DO_SEED" = "1" ]; then
   pf postgres-service 5432 --address ::1
   sleep 3
   DB_HOST=::1 python -m cx.seed_cx_issues || echo "⚠ seed skipped (no customers? seed the bank first)"
+  # Ensure the survey tables exist, then seed the demo campaigns (NPS + CSAT).
+  kubectl --context "$CTX" -n "$NS" exec -i deploy/postgres -- \
+    psql -U nanobank_user -d nano_bank_db < src/core/tables/11_cx_surveys.sql >/dev/null 2>&1 || true
+  DB_HOST=::1 python -m cx.seed_surveys || echo "⚠ survey seed skipped"
 fi
 
 echo "🔌 port-forward: cxo:8098 ..."

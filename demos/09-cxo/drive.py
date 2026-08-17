@@ -50,6 +50,14 @@ BEATS = [
         "outcome_hint": "read_only",
     },
     {
+        "title": "Survey signal — NPS + CSAT",
+        "shows": "proactive VoC: the CXO reads NPS/CSAT and says where detractors cluster",
+        "message": "What is our current NPS, and how does CSAT look — especially "
+                   "among customers who raised a complaint? Tell me where the "
+                   "detractors cluster.",
+        "thread": "new",
+    },
+    {
         "title": "Ranked feature backlog",
         "shows": "the signature output: a prioritised backlog, each item citing its grounded signal",
         "message": "Give me a ranked feature backlog for next quarter — top 3 — each "
