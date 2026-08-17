@@ -21,6 +21,24 @@ class ClientContext:
         finally:
             conn.close()
 
+    def insert_cx_issue(self, customer_id: str, category: str, severity: str,
+                        summary: str, detail: str) -> str:
+        """Write a customer-experience complaint (source='personal_manager') and
+        return its id. The one WRITE this read-only context performs — a benign,
+        non-money record of what the customer told their manager."""
+        import psycopg2
+        conn = psycopg2.connect(**self._db)
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO cx_issues (customer_id, category, severity, summary,"
+                    " detail, source) VALUES (%s,%s,%s,%s,%s,'personal_manager')"
+                    " RETURNING id::text",
+                    (customer_id, category, severity, summary, detail))
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
     def profile(self, customer_id: str) -> Optional[dict]:
         rows = self._rows(
             "-- profile\nSELECT first_name, last_name, email, kyc_status "
