@@ -508,7 +508,7 @@ def test_campaign_specs_are_nps_and_csat():
     specs = s.campaign_specs()
     insts = {sp["instrument"] for sp in specs}
     assert insts == {"nps", "csat"}
-    assert any(sp["segment"] == "product:interac" for sp in specs)
+    assert any(sp["segment"] == "has_open_issue" for sp in specs)
     assert all(sp["question"] for sp in specs)
 ```
 
@@ -527,7 +527,7 @@ def campaign_specs() -> list[dict]:
     return [
         {"instrument": "nps", "segment": "all_active",
          "question": "How likely are you to recommend nano-bank to a friend?"},
-        {"instrument": "csat", "segment": "product:interac",
+        {"instrument": "csat", "segment": "has_open_issue",
          "question": "How satisfied were you with your recent Interac e-Transfer?"},
     ]
 
@@ -566,7 +566,7 @@ Expected: two `seeded campaign ...` lines with `responses` > 0.
 
 ```bash
 git add cx/seed_surveys.py cx/tests/test_seed_surveys.py
-git commit -m "feat(cx): survey seeder (NPS all_active + CSAT product:interac) + test"
+git commit -m "feat(cx): survey seeder (NPS all_active + CSAT has_open_issue) + test"
 ```
 
 ---

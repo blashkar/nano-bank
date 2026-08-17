@@ -133,7 +133,7 @@ detractor clusters (by segment) into the ranked feature backlog.
 ### 7. Demo — `demos/09-cxo/`
 
 - `cx/seed_surveys.py` — creates two campaigns and simulates responses: **NPS on
-  `all_active`** and **CSAT on `product:interac`** (which correlates with the seeded
+  `all_active`** and **CSAT on `has_open_issue`** (which correlates with the seeded
   `rail_experience` issues → low CSAT, a coherent story).
 - `run-demo.sh` — adds a survey-seed step after the `cx_issues` seed.
 - `drive.py` — one new beat between the customer-voice and backlog beats: *"What's
