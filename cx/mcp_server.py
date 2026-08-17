@@ -59,6 +59,37 @@ def build_mcp(deps: Deps) -> FastMCP:
         return db.issue_by_id(issue_id) or {}
 
     @mcp.tool()
+    def list_campaigns() -> list:
+        """Survey campaigns with instrument, segment, status, and response count."""
+        return db.campaigns()
+
+    @mcp.tool()
+    def nps_score(campaign_id: str = "") -> dict:
+        """Net Promoter Score for one campaign (by id) or across all NPS campaigns."""
+        return metrics.nps(db.survey_scores(campaign_id=campaign_id or None,
+                                            instrument=None if campaign_id else "nps"))
+
+    @mcp.tool()
+    def csat_score(campaign_id: str = "") -> dict:
+        """CSAT for one campaign (by id) or across all CSAT campaigns."""
+        return metrics.csat(db.survey_scores(campaign_id=campaign_id or None,
+                                             instrument=None if campaign_id else "csat"))
+
+    @mcp.tool()
+    def survey_results(campaign_id: str = "") -> list:
+        """Per-campaign summary: instrument, segment, responses, and headline score."""
+        out = []
+        for c in db.campaigns():
+            if campaign_id and c["id"] != campaign_id:
+                continue
+            scores = db.survey_scores(campaign_id=c["id"])
+            agg = metrics.nps(scores) if c["instrument"] == "nps" else metrics.csat(scores)
+            out.append({"campaign_id": c["id"], "instrument": c["instrument"],
+                        "segment": c["segment"], "responses": c["responses"],
+                        "score": agg.get("score", agg.get("csat_rate"))})
+        return out
+
+    @mcp.tool()
     def cx_summary() -> dict:
         """Headline CX posture: onboarding + adoption + friction + engagement + issues."""
         return {"onboarding": metrics.onboarding_funnel(db.customers_onboarding(),
@@ -68,7 +99,9 @@ def build_mcp(deps: Deps) -> FastMCP:
                 "friction": metrics.friction_metrics(db.transaction_outcomes(w),
                                                      db.interac_outcomes(w)),
                 "engagement": metrics.engagement_metrics(db.customer_recency(), w),
-                "issues": metrics.issue_summary(db.issue_rows())}
+                "issues": metrics.issue_summary(db.issue_rows()),
+                "surveys": {"nps": metrics.nps(db.survey_scores(instrument="nps")),
+                            "csat": metrics.csat(db.survey_scores(instrument="csat"))}}
 
     return mcp
 
