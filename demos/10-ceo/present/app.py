@@ -43,10 +43,33 @@ ss.setdefault("selected", 1)
 ss.setdefault("primed", False)
 
 
+_OFFICER_ICON = {"cfo": "💰", "coo": "🏭", "cto": "🖥️", "cxo": "🙂"}
+
+
+def _contribution_panel(c: dict) -> None:
+    officer = (c.get("officer") or "").lower()
+    icon = _OFFICER_ICON.get(officer, "🧑‍💼")
+    if c.get("role") == "direct":
+        acted = c.get("acted")
+        tag = ("🟢 lever fired" if acted else "🟡 no action") if acted is not None else "directed"
+        header = f"{icon} **{officer.upper()}** — directed · {tag}"
+    else:
+        header = f"{icon} **{officer.upper()}** — consulted"
+    with st.container(border=True):
+        st.markdown(header)
+        text = (c.get("text") or "").strip()
+        st.markdown(text if text else "_(no content captured)_")
+
+
 def _beat_card(rec: dict) -> None:
     st.markdown(f"#### Beat {rec['beat']} — {rec['title']}")
     st.caption(rec["shows"])
-    st.markdown(f"**Q:** {rec['question']}")
+    st.markdown(f"**🗣️ Chair puts to the board:** {rec['question']}")
+    contributions = rec.get("contributions") or []
+    if contributions:
+        st.markdown("##### 🏛️ Round the table")
+        for c in contributions:
+            _contribution_panel(c)
     h = rec.get("harness", {})
     bits = []
     for k in ("planned", "todos", "subagents"):
@@ -57,6 +80,7 @@ def _beat_card(rec: dict) -> None:
     if bits:
         with st.expander("harness · " + " · ".join(bits)):
             st.json(h)
+    st.markdown("##### 🎙️ The CEO (chair)")
     st.write(rec["answer"])
     chip = state.outcome_chip(rec["outcome"]["kind"])
     if chip:

@@ -2,6 +2,8 @@
 `trace.merge`). No dependencies — safe to import from the Streamlit console and
 from the standalone demo driver alike."""
 from __future__ import annotations
+import ast
+import json
 
 # Harness/plumbing tools are reported specially; everything else in a turn is a
 # domain (operations) tool worth naming.
@@ -83,6 +85,44 @@ def beat_outcome(trace: list[dict], outcome_hint: str | None = None) -> dict:
 from datetime import datetime, timezone  # noqa: E402
 
 
+def _tool_output_field(output, key: str) -> str:
+    """Pull a field out of a tool event's `output`, which may be a dict OR a
+    str(dict)/JSON string (traces sometimes stringify tool results)."""
+    if isinstance(output, dict):
+        v = output.get(key)
+        return v if v is not None else ""
+    s = str(output or "")
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            d = loader(s)
+            if isinstance(d, dict) and d.get(key) is not None:
+                return d[key]
+        except Exception:  # noqa: BLE001
+            pass
+    return ""
+
+
+def board_contributions(trace: list[dict]) -> list[dict]:
+    """Each officer's spoken contribution in a C-suite turn, in order: consult
+    relays (`consult_<peer>` → the officer's answer) and directives (`direct_<peer>`
+    → the officer's response + whether its lever fired). Empty for non-board turns."""
+    out: list[dict] = []
+    for ev in trace:
+        if ev.get("kind") != "tool":
+            continue
+        name = ev.get("name") or ""
+        if name.startswith("consult_"):
+            out.append({"officer": name[len("consult_"):], "role": "consult",
+                        "text": _tool_output_field(ev.get("output"), "answer")})
+        elif name.startswith("direct_"):
+            o = ev.get("output")
+            acted = _tool_output_field(o, "officer_acted")
+            out.append({"officer": name[len("direct_"):], "role": "direct",
+                        "text": _tool_output_field(o, "officer_response"),
+                        "acted": bool(acted) if acted != "" else None})
+    return out
+
+
 def beat_record(n: int, beat: dict, resp: dict, now: datetime | None = None) -> dict:
     """Turn one demo beat + its /ask response into a JSON-serialisable record —
     the unit the presentation console reads (one JSON line per beat). Pure."""
@@ -103,6 +143,7 @@ def beat_record(n: int, beat: dict, resp: dict, now: datetime | None = None) -> 
             "records": h["records"],
         },
         "answer": resp.get("answer", ""),
+        "contributions": board_contributions(trace),
         "outcome": beat_outcome(trace, beat.get("outcome_hint")),
         "ts": ts,
     }
