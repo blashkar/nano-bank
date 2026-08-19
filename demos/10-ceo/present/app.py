@@ -1,11 +1,12 @@
-"""Agent CEO presentation console — a C-suite-meeting view. Three panes:
+"""Agent CEO presentation console — the boardroom, in two tabs:
 
-  · left rail  — a BUTTON PER BEAT, each captioned with what that beat shows
-  · centre     — the selected beat's card (the CEO's turn at the table)
-  · right      — the C-suite roster + verified-minutes chip (did a lever fire?)
+  · 🏛️ C-suite meeting — round-the-table consults → synthesis → a directive
+  · ⚖️ Board debate    — a back-and-forth on one pressing topic, then a ruling
 
-Driven live by run-demo.sh (--emit-jsonl) with a recorded fallback you can replay
-beat-by-beat. Run from the HOST:
+Each tab is a per-beat stepper: three panes — the agenda (a button per beat), the
+selected beat (round-the-table: each officer's contribution, then the CEO/chair),
+and the board roster. Driven live by run-demo.sh (--emit-jsonl) with a recorded
+fallback. Run from the HOST:
 
     export XDG_RUNTIME_DIR=/run/user/1000 XDG_DATA_HOME=/home/bmartins/.local/share
     streamlit run demos/10-ceo/present/app.py --server.port 8511
@@ -23,27 +24,27 @@ import state  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 RUN_DEMO = os.path.join(REPO_ROOT, "demos", "10-ceo", "run-demo.sh")
-DRIVE_PY = os.path.join(REPO_ROOT, "demos", "10-ceo", "drive.py")
-RECORDINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+PRESENT = os.path.dirname(os.path.abspath(__file__))
 
+_OFFICER_ICON = {"cfo": "💰", "coo": "🏭", "cto": "🖥️", "cxo": "🙂"}
 _OFFICERS = [("CFO", "the books — profitability, NIM, capital", "consult-only"),
              ("COO", "money-movement operations — rails, settlement", "directable"),
              ("CTO", "the platform — reliability, deployments", "directable"),
              ("CXO", "customer experience — friction, NPS/CSAT", "consult-only")]
 
+# Each tab: label, its driver (for the beat catalog + live run), recordings dir,
+# the run-demo flag that selects that driver, and a session-state key prefix.
+TABS = [
+    {"label": "🏛️ C-suite meeting", "driver": "drive.py",
+     "recordings": os.path.join(PRESENT, "recordings", "meeting"),
+     "flag": "", "key": "mt"},
+    {"label": "⚖️ Board debate", "driver": "debate.py",
+     "recordings": os.path.join(PRESENT, "recordings", "debate"),
+     "flag": "--debate", "key": "db"},
+]
+
 st.set_page_config(page_title="Agent CEO", layout="wide")
-CATALOG = state.beat_catalog(DRIVE_PY)
-
 ss = st.session_state
-ss.setdefault("beats", [])
-ss.setdefault("mode", "idle")
-ss.setdefault("proc", None)
-ss.setdefault("jsonl_path", None)
-ss.setdefault("selected", 1)
-ss.setdefault("primed", False)
-
-
-_OFFICER_ICON = {"cfo": "💰", "coo": "🏭", "cto": "🖥️", "cxo": "🙂"}
 
 
 def _contribution_panel(c: dict) -> None:
@@ -54,7 +55,7 @@ def _contribution_panel(c: dict) -> None:
         tag = ("🟢 lever fired" if acted else "🟡 no action") if acted is not None else "directed"
         header = f"{icon} **{officer.upper()}** — directed · {tag}"
     else:
-        header = f"{icon} **{officer.upper()}** — consulted"
+        header = f"{icon} **{officer.upper()}** — speaks"
     with st.container(border=True):
         st.markdown(header)
         text = (c.get("text") or "").strip()
@@ -70,16 +71,6 @@ def _beat_card(rec: dict) -> None:
         st.markdown("##### 🏛️ Round the table")
         for c in contributions:
             _contribution_panel(c)
-    h = rec.get("harness", {})
-    bits = []
-    for k in ("planned", "todos", "subagents"):
-        if h.get(k):
-            bits.append(f"{k} {h[k]}")
-    if h.get("tools"):
-        bits.append("tools: " + ", ".join(h["tools"]))
-    if bits:
-        with st.expander("harness · " + " · ".join(bits)):
-            st.json(h)
     st.markdown("##### 🎙️ The CEO (chair)")
     st.write(rec["answer"])
     chip = state.outcome_chip(rec["outcome"]["kind"])
@@ -94,110 +85,131 @@ def _pending_card(cat: dict) -> None:
     st.info("Not shown yet — click **▶ Run live** or **⏮ Replay last good run**.")
 
 
-def _reset() -> None:
-    ss.beats, ss.mode, ss.proc, ss.jsonl_path = [], "idle", None, None
-    ss.selected, ss.primed = 1, True
-
-
-def _start_live() -> None:
-    os.makedirs(RECORDINGS, exist_ok=True)
-    fd, path = tempfile.mkstemp(suffix=".jsonl", prefix="ceo-run-")
+def _start_live(cfg: dict) -> None:
+    os.makedirs(cfg["recordings"], exist_ok=True)
+    fd, path = tempfile.mkstemp(suffix=".jsonl", prefix=f"ceo-{cfg['key']}-")
     os.close(fd)
     env = dict(os.environ,
                XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000"),
                XDG_DATA_HOME=os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")))
-    ss.proc = subprocess.Popen(["bash", RUN_DEMO, "--no-up", "--emit-jsonl", path],
-                               cwd=REPO_ROOT, env=env)
-    ss.jsonl_path, ss.beats, ss.mode, ss.selected = path, [], "live", 1
+    cmd = ["bash", RUN_DEMO, "--no-up", "--no-seed"]
+    if cfg["flag"]:
+        cmd.append(cfg["flag"])
+    cmd += ["--emit-jsonl", path]
+    k = cfg["key"]
+    ss[f"{k}_proc"] = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env)
+    ss[f"{k}_jsonl"], ss[f"{k}_beats"], ss[f"{k}_mode"], ss[f"{k}_selected"] = path, [], "live", 1
 
 
-def _start_replay() -> None:
-    latest = state.latest_recording(RECORDINGS)
+def _start_replay(cfg: dict) -> None:
+    latest = state.latest_recording(cfg["recordings"])
     if not latest:
         st.toast("No recording yet — run live once to capture one.")
         return
-    ss.beats, ss.mode, ss.selected = state.load_recording(latest)["beats"], "replay", 1
+    k = cfg["key"]
+    ss[f"{k}_beats"], ss[f"{k}_mode"], ss[f"{k}_selected"] = (
+        state.load_recording(latest)["beats"], "replay", 1)
 
 
-if not ss.primed and not ss.beats and ss.mode == "idle":
-    _latest = state.latest_recording(RECORDINGS)
-    if _latest:
+def render_tab(cfg: dict) -> None:
+    k = cfg["key"]
+    catalog = state.beat_catalog(os.path.join(REPO_ROOT, "demos", "10-ceo", cfg["driver"]))
+    ss.setdefault(f"{k}_beats", [])
+    ss.setdefault(f"{k}_mode", "idle")
+    ss.setdefault(f"{k}_proc", None)
+    ss.setdefault(f"{k}_jsonl", None)
+    ss.setdefault(f"{k}_selected", 1)
+    ss.setdefault(f"{k}_primed", False)
+
+    if not ss[f"{k}_primed"] and not ss[f"{k}_beats"] and ss[f"{k}_mode"] == "idle":
+        latest = state.latest_recording(cfg["recordings"])
+        if latest:
+            try:
+                ss[f"{k}_beats"] = state.load_recording(latest)["beats"]
+            except (OSError, ValueError):
+                pass
+        ss[f"{k}_primed"] = True
+
+    live = ss[f"{k}_mode"] == "live"
+    c1, c2, c3, c4, _ = st.columns([1, 1.4, 1, 1, 3])
+    if c1.button("▶ Run live", key=f"{k}-live", type="primary", disabled=live):
+        _start_live(cfg)
+    if c2.button("⏮ Replay last good run", key=f"{k}-replay", disabled=live):
+        _start_replay(cfg)
+    if c3.button("▦ All beats", key=f"{k}-all"):
+        ss[f"{k}_selected"] = None
+    if c4.button("↺ Reset", key=f"{k}-reset", disabled=live):
+        ss[f"{k}_beats"], ss[f"{k}_mode"], ss[f"{k}_proc"], ss[f"{k}_jsonl"] = [], "idle", None, None
+        ss[f"{k}_selected"], ss[f"{k}_primed"] = 1, True
+
+    if live and ss[f"{k}_jsonl"]:
         try:
-            ss.beats = state.load_recording(_latest)["beats"]
-        except (OSError, ValueError):
-            pass
-    ss.primed = True
-
-st.title("Agent CEO — the C-suite meeting")
-c1, c2, c3, c4, _ = st.columns([1, 1.4, 1, 1, 3])
-if c1.button("▶ Run live", type="primary", disabled=ss.mode == "live"):
-    _start_live()
-if c2.button("⏮ Replay last good run", disabled=ss.mode == "live"):
-    _start_replay()
-if c3.button("▦ All beats"):
-    ss.selected = None
-if c4.button("↺ Reset", disabled=ss.mode == "live"):
-    _reset()
-
-by_num = {int(r["beat"]): r for r in ss.beats}
-nav, centre, right = st.columns([2.2, 4, 2.6])
-
-with nav:
-    st.subheader("Agenda")
-    st.caption("Click a beat. ✅ = has a result this session.")
-    for b in CATALOG:
-        n = b["beat"]
-        mark = "✅" if n in by_num else "⚪"
-        sel = "▶ " if ss.selected == n else ""
-        if st.button(f"{sel}{mark} Beat {n} — {b['title']}",
-                     key=f"beat-btn-{n}", use_container_width=True):
-            ss.selected = n
-        st.caption(b["shows"])
-
-with centre:
-    if ss.mode == "live" and ss.jsonl_path:
-        try:
-            with open(ss.jsonl_path, encoding="utf-8") as f:
-                ss.beats = state.read_jsonl(f.read())
-            by_num = {int(r["beat"]): r for r in ss.beats}
+            with open(ss[f"{k}_jsonl"], encoding="utf-8") as f:
+                ss[f"{k}_beats"] = state.read_jsonl(f.read())
         except FileNotFoundError:
             pass
 
-    if ss.selected is None:
-        st.subheader("Full meeting")
-        if not ss.beats:
-            st.info("No run loaded yet. Click ▶ Run live or ⏮ Replay last good run.")
-        for rec in ss.beats:
-            _beat_card(rec)
-            st.divider()
-    else:
-        rec = by_num.get(ss.selected)
-        cat = next((b for b in CATALOG if b["beat"] == ss.selected), None)
-        if rec:
-            _beat_card(rec)
-        elif ss.mode == "live":
-            _pending_card(cat or {"beat": ss.selected, "title": "", "shows": "", "question": ""})
-            st.caption("⏳ live run in progress — this beat will fill in when it lands.")
-        elif cat:
-            _pending_card(cat)
+    by_num = {int(r["beat"]): r for r in ss[f"{k}_beats"]}
+    nav, centre, right = st.columns([2.2, 4, 2.6])
 
-    if ss.mode == "live" and ss.proc and ss.proc.poll() is not None:
-        state.save_recording(RECORDINGS, ss.beats)
-        ss.mode, ss.proc = "idle", None
-        st.toast("Live run complete — recording saved.")
+    with nav:
+        st.subheader("Agenda")
+        st.caption("Click a beat. ✅ = has a result this session.")
+        for b in catalog:
+            n = b["beat"]
+            mark = "✅" if n in by_num else "⚪"
+            sel = "▶ " if ss[f"{k}_selected"] == n else ""
+            if st.button(f"{sel}{mark} Beat {n} — {b['title']}",
+                         key=f"{k}-beat-{n}", use_container_width=True):
+                ss[f"{k}_selected"] = n
+            st.caption(b["shows"])
 
-with right:
-    st.subheader("The board")
-    for name, lane, kind in _OFFICERS:
-        tag = "🔧 directable" if kind == "directable" else "📊 consult-only"
-        st.markdown(f"**{name}** · {tag}")
-        st.caption(lane)
-    st.divider()
-    st.caption("A directive posts an imperative to the officer's own /ask; its lever "
-               "self-verifies and acts. The CEO reads back the officer's ledger row "
-               "to prove a lever fired before recording its own directive row.")
+    with centre:
+        sel = ss[f"{k}_selected"]
+        if sel is None:
+            st.subheader("Full session")
+            if not ss[f"{k}_beats"]:
+                st.info("No run loaded yet. Click ▶ Run live or ⏮ Replay last good run.")
+            for rec in ss[f"{k}_beats"]:
+                _beat_card(rec)
+                st.divider()
+        else:
+            rec = by_num.get(sel)
+            cat = next((b for b in catalog if b["beat"] == sel), None)
+            if rec:
+                _beat_card(rec)
+            elif live:
+                _pending_card(cat or {"beat": sel, "title": "", "shows": "", "question": ""})
+                st.caption("⏳ live run in progress — this beat will fill in when it lands.")
+            elif cat:
+                _pending_card(cat)
 
-if ss.mode == "live":
+        if live and ss[f"{k}_proc"] and ss[f"{k}_proc"].poll() is not None:
+            state.save_recording(cfg["recordings"], ss[f"{k}_beats"])
+            ss[f"{k}_mode"], ss[f"{k}_proc"] = "idle", None
+            st.toast("Live run complete — recording saved.")
+
+    with right:
+        st.subheader("The board")
+        for name, lane, kind in _OFFICERS:
+            tag = "🔧 directable" if kind == "directable" else "📊 consult-only"
+            st.markdown(f"**{name}** · {tag}")
+            st.caption(lane)
+        st.divider()
+        st.caption("Officers relay positions to each other through the chair; a "
+                   "directive posts an imperative to the officer's own /ask — its "
+                   "lever self-verifies and acts, and the CEO reads back the ledger "
+                   "row to prove a lever fired.")
+
+
+st.title("Agent CEO — the boardroom")
+tabs = st.tabs([t["label"] for t in TABS])
+for tab, cfg in zip(tabs, TABS):
+    with tab:
+        render_tab(cfg)
+
+# refresh while any tab is running a live capture
+if any(ss.get(f"{t['key']}_mode") == "live" for t in TABS):
     import time
     time.sleep(1.5)
     st.rerun()

@@ -20,10 +20,12 @@ NS=nano-bank
 
 DO_UP=1 DO_SEED=1
 EMIT_ARG=""
+DRIVER=drive.py                     # the C-suite meeting; --debate swaps to the debate
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-up)      DO_UP=0 ;;
     --no-seed)    DO_SEED=0 ;;
+    --debate)     DRIVER=debate.py ;;
     --emit-jsonl) EMIT_ARG="--emit-jsonl $2"; shift ;;
     *) echo "unknown flag: $1"; exit 2 ;;
   esac
@@ -61,4 +63,4 @@ fi
 
 pf ceo 8099
 sleep 2
-CEO_API_URL="http://localhost:8099" python demos/10-ceo/drive.py $EMIT_ARG
+CEO_API_URL="http://localhost:8099" python demos/10-ceo/"$DRIVER" $EMIT_ARG
