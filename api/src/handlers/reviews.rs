@@ -31,8 +31,14 @@
 //! `executed` always carries `transaction_id`, written in the same statement,
 //! so a customer polling can treat it as final. `executing` is the transient
 //! claim while the released movement posts; a crash mid-release leaves the row
-//! reclaimable once `claimed_at` ages past the lease, and the rail's own
-//! idempotency key stops a reclaim from paying twice.
+//! reclaimable once `claimed_at` ages past the lease, and an idempotency key
+//! stops a reclaim from paying twice.
+//!
+//! That last clause used to be a claim rather than a fact. `idempotency_key` is
+//! optional for callers and both rails' uniqueness guards skip NULL, so a
+//! keyless movement could be reclaimed and paid a second time — while this
+//! comment asserted it could not. `park` now derives a key from the review when
+//! the caller gave none; see its doc.
 //!
 //! ## The gap, stated
 //!
@@ -130,6 +136,38 @@ impl From<&ParkedReview> for ReviewStatus {
 // parking
 // ---------------------------------------------------------------------------
 
+/// The review a retry of this exact request is already parked behind, if any.
+///
+/// Called by the rails **before screening**, alongside their existing
+/// posted-movement replay check. Without it a client retrying a held request
+/// finds nothing in `transactions` (a parked movement has posted nothing), so
+/// it screens again: a second decision with a fresh `operation_id`, and the
+/// velocity windows counting one customer intent twice. #28 established that a
+/// replay must short-circuit *before* the engine is called; a parked movement
+/// is a replay the posted tables cannot see.
+pub(crate) async fn open_park_for(
+    state: &AppState,
+    customer_id: Uuid,
+    idempotency_key: Option<&str>,
+) -> Result<Option<ReviewStatus>, AppError> {
+    let Some(key) = idempotency_key else {
+        // Nothing to match on. A keyless caller cannot be deduplicated here,
+        // exactly as it cannot be in the posted-movement replay check.
+        return Ok(None);
+    };
+    let parked: Option<ParkedReview> = sqlx::query_as(&format!(
+        "SELECT {REVIEW_COLUMNS} FROM pending_reviews \
+         WHERE customer_id = $1 AND idempotency_key = $2 \
+           AND status IN ('held', 'executing')",
+    ))
+    .bind(customer_id)
+    .bind(key)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    Ok(parked.as_ref().map(ReviewStatus::from))
+}
+
 /// What a rail hands over when the engine holds its movement.
 pub(crate) struct ParkRequest<'a> {
     pub customer_id: Uuid,
@@ -140,7 +178,8 @@ pub(crate) struct ParkRequest<'a> {
     pub idempotency_key: Option<&'a str>,
     /// Everything needed to execute this movement later, shaped by `rail`.
     /// Must contain no plaintext secret — hash before parking, as the send path
-    /// would have.
+    /// would have. `park` fills in an `idempotency_key` here when the caller
+    /// had none; see its doc for why the release cannot be safe without one.
     pub movement: serde_json::Value,
     pub link: &'a FraudLink,
 }
@@ -152,24 +191,52 @@ pub(crate) struct ParkRequest<'a> {
 /// retry adopts the existing park instead of needing a losing branch that
 /// re-reads. The update is a self-assignment — a duplicate must never rewrite
 /// the amount or the expiry the first park recorded.
+///
+/// ## Every parked movement leaves here with a release key
+///
+/// The reclaim lease is only safe because a re-execution collides with the
+/// first attempt and adopts it instead of paying again — and that collision
+/// needs a key. `idempotency_key` is optional for callers, and **both rails'
+/// uniqueness guards skip NULL**: the transfer index is
+/// `WHERE (metadata->>'idempotency_key') IS NOT NULL`, and interac's
+/// `UNIQUE (sender_customer_id, idempotency_key)` treats repeated NULLs as
+/// non-conflicting. So a keyless movement that crashed between posting the
+/// money and recording `executed` was reclaimed and paid a second time.
+///
+/// When the caller supplies no key, one is derived from the review itself.
+/// `review_id` is minted here rather than defaulted by the database precisely
+/// so the key can exist before the row does — and being the review's own id, it
+/// is stable across every reclaim by construction.
+///
+/// It goes into `movement` (what the release path replays), not into the
+/// `idempotency_key` column, which stays the *caller's* key: that column is
+/// what a retry is deduplicated against, and inventing a value there would
+/// make every keyless park look like a distinct caller intent.
 pub(crate) async fn park(state: &AppState, req: ParkRequest<'_>) -> Result<ReviewStatus, AppError> {
+    let review_id = Uuid::new_v4();
+    let mut movement = req.movement;
+    if req.idempotency_key.is_none() {
+        movement["idempotency_key"] = json!(format!("review-{review_id}"));
+    }
+
     let parked: ParkedReview = sqlx::query_as(&format!(
         "INSERT INTO pending_reviews \
-         (customer_id, account_id, rail, amount, idempotency_key, movement, \
+         (review_id, customer_id, account_id, rail, amount, idempotency_key, movement, \
           operation_id, decision_id, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
-                 CURRENT_TIMESTAMP + $9 * INTERVAL '1 minute') \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, \
+                 CURRENT_TIMESTAMP + $10 * INTERVAL '1 minute') \
          ON CONFLICT (customer_id, idempotency_key) \
          WHERE status IN ('held', 'executing') AND idempotency_key IS NOT NULL \
          DO UPDATE SET customer_id = pending_reviews.customer_id \
          RETURNING {REVIEW_COLUMNS}",
     ))
+    .bind(review_id)
     .bind(req.customer_id)
     .bind(req.account_id)
     .bind(req.rail)
     .bind(req.amount)
     .bind(req.idempotency_key)
-    .bind(&req.movement)
+    .bind(&movement)
     .bind(req.link.operation_id)
     .bind(req.link.decision_id)
     .bind(state.settings.fraud.review_ttl_minutes)
@@ -198,7 +265,7 @@ async fn get_review(
     auth: AuthenticatedCustomer,
     Path(review_id): Path<Uuid>,
 ) -> Result<Json<ReviewStatus>, AppError> {
-    reclaim_stranded(&state, review_id).await?;
+    reclaim_stranded(&state, review_id, auth.customer_id).await?;
 
     let parked = load(&state, review_id, auth.customer_id).await?;
     if parked.status != "held" {
@@ -289,13 +356,27 @@ async fn load(
 /// Return a release that died mid-flight to `held` so a later poll can retry
 /// it. Unaudited on purpose: a lease timeout restores the prior state, it is
 /// not a decision about the movement.
-async fn reclaim_stranded(state: &AppState, review_id: Uuid) -> Result<(), AppError> {
+///
+/// **Scoped to the polling customer.** This runs before the customer-scoped
+/// `load()`, so without the `customer_id` bind any authenticated caller holding
+/// a stranger's `review_id` would flip that stranger's stranded claim back to
+/// `held` — the read that follows 404s, but the write has already landed. A
+/// handler must not write a row it may not read; `approvals.rs` learned the
+/// same lesson in `a5c14d9` and carries the caller's scope through
+/// `ExpiryScope` for exactly this reason.
+async fn reclaim_stranded(
+    state: &AppState,
+    review_id: Uuid,
+    customer_id: Uuid,
+) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE pending_reviews SET status = 'held', claimed_at = NULL \
-         WHERE review_id = $1 AND status = 'executing' AND transaction_id IS NULL \
-           AND claimed_at <= CURRENT_TIMESTAMP - $2 * INTERVAL '1 second'",
+         WHERE review_id = $1 AND customer_id = $2 \
+           AND status = 'executing' AND transaction_id IS NULL \
+           AND claimed_at <= CURRENT_TIMESTAMP - $3 * INTERVAL '1 second'",
     )
     .bind(review_id)
+    .bind(customer_id)
     .bind(RECLAIM_AFTER_SECONDS)
     .execute(&state.pool)
     .await
@@ -380,10 +461,17 @@ async fn release(state: &AppState, parked: ParkedReview) -> Result<ReviewStatus,
             .await
             .map_err(AppError::Database)?;
 
-            // Tell the engine the movement it held actually happened, so the
-            // label on this decision reflects the outcome rather than the hold.
-            report_release(state, &parked, transaction_id);
-
+            // Nothing is reported to the engine here, deliberately. The label
+            // for this decision is written engine-side when the reviewer
+            // resolves the case (`case_cleared`, carrying the operation_id) —
+            // the bank is not part of that path.
+            //
+            // An earlier version fired a `released_after_review` event at
+            // /v1/outcomes. It never once worked: `OutcomeEventType` is a closed
+            // set the engine validates against, so every call was rejected 400,
+            // silently, because the send was fire-and-forget. And `read_labels`
+            // filters to LABEL_EVENTS, so even a delivered one would have
+            // trained and evaluated nothing.
             tracing::info!(
                 review_id = %parked.review_id, %transaction_id,
                 "▶️ cleared review released — money moved"
@@ -460,27 +548,4 @@ pub(crate) struct ParkedTransfer {
     pub description: String,
     pub external_reference: Option<String>,
     pub idempotency_key: Option<String>,
-}
-
-/// Fire-and-forget: the engine learns that a decision it held was released and
-/// posted. Must never affect the customer's poll — the money has already moved,
-/// and failing the response over a telemetry write would be worse than the lost
-/// event.
-fn report_release(state: &AppState, parked: &ParkedReview, transaction_id: Uuid) {
-    let fraud = state.fraud.clone();
-    let payload = json!({
-        "event_key": format!("review-released-{}", parked.review_id),
-        "operation_id": parked.operation_id,
-        "decision_id": parked.decision_id,
-        "transaction_id": transaction_id,
-        "customer_id": parked.customer_id,
-        "event_type": "released_after_review",
-        "source": "bank",
-        "occurred_at": chrono::Utc::now(),
-    });
-    tokio::spawn(async move {
-        if let Err(e) = fraud.report_denial(&payload).await {
-            tracing::warn!(error = %e, "could not report a released review to the engine");
-        }
-    });
 }

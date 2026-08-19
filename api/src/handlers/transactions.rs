@@ -412,6 +412,14 @@ async fn transfer_money(
             let resp = load_transaction_response(&state.pool, existing).await?;
             return Ok((StatusCode::OK, Json(resp)).into_response());
         }
+        // A movement held for review has posted nothing, so the check above
+        // cannot see it. Without this a retry re-screens and mints a second
+        // decision, counting one customer intent twice in the velocity windows.
+        if let Some(parked) =
+            crate::handlers::reviews::open_park_for(&state, auth.customer_id, Some(key)).await?
+        {
+            return Ok((StatusCode::ACCEPTED, Json(parked)).into_response());
+        }
     }
 
     let executed = execute_transfer(

@@ -113,6 +113,13 @@ async fn send_etransfer(
         if let Some(existing) = load_etransfer_by_key(&state, caller.customer_id, key).await? {
             return Ok((StatusCode::CREATED, Json(existing)).into_response());
         }
+        // A held send has created no e-Transfer row, so the check above cannot
+        // see it — the retry would screen again and mint a second decision.
+        if let Some(parked) =
+            crate::handlers::reviews::open_park_for(&state, caller.customer_id, Some(key)).await?
+        {
+            return Ok((StatusCode::ACCEPTED, Json(parked)).into_response());
+        }
     }
 
     // Resolve the recipient and hash the security answer BEFORE screening.
@@ -307,7 +314,7 @@ pub(crate) async fn send_resolved(
 
     // Create the etransfer row (outbound, held).
     let claim_token = crate::handlers::cards::reference_number("CLM");
-    let etransfer_id: Uuid = sqlx::query_scalar(
+    let inserted = sqlx::query_scalar::<_, Uuid>(
         r#"
         INSERT INTO interac_etransfers
             (direction, status, amount, sender_customer_id, sender_account_id,
@@ -333,8 +340,45 @@ pub(crate) async fn send_resolved(
     .bind(&req.idempotency_key)
     .bind(expiry_days(state).to_string())
     .fetch_one(&mut *tx)
-    .await
-    .map_err(idempotency_conflict)?;
+    .await;
+
+    // Adopt the winner, exactly as the transfer rail has since #65.
+    //
+    // A unique violation here means this e-Transfer was ALREADY SENT under the
+    // same key — by a racing caller, or by the release of a review whose first
+    // attempt crashed after posting. It used to map through
+    // `idempotency_conflict` to a bare `Conflict`, which the release path then
+    // recorded as `refused` ("cleared, but could not be completed") while the
+    // money had in fact moved. Telling a customer their transfer was refused
+    // after sending it is the worst outcome this rail can produce.
+    //
+    // The failed INSERT has aborted the transaction, so it is rolled back
+    // before reading: Postgres refuses every further statement on a poisoned
+    // transaction, and the winner's rows are committed elsewhere anyway.
+    let etransfer_id: Uuid = match inserted {
+        Ok(id) => id,
+        Err(e) if is_unique_violation(&e) => {
+            drop(tx);
+            let key = req
+                .idempotency_key
+                .as_deref()
+                .expect("a unique violation implies a key was sent");
+            let existing = load_etransfer_ids_by_key(state, caller_customer_id, key)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Internal(
+                        "interac idempotency conflict but no committed e-Transfer found"
+                            .to_string(),
+                    )
+                })?;
+            tracing::info!(
+                etransfer_id = %existing.0,
+                "♻️ e-Transfer adopted from a prior send under the same key"
+            );
+            return Ok(existing);
+        }
+        Err(e) => return Err(idempotency_conflict(e)),
+    };
 
     // Route based on the recipient.
     let status = match (registration.as_ref(), autodeposit) {
@@ -564,6 +608,10 @@ pub(crate) async fn flush_notifications_inner(
     }))
 }
 
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
+}
+
 fn idempotency_conflict(e: sqlx::Error) -> AppError {
     match &e {
         sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
@@ -571,6 +619,27 @@ fn idempotency_conflict(e: sqlx::Error) -> AppError {
         }
         _ => AppError::from(e),
     }
+}
+
+/// The ids a caller needs back for an e-Transfer that already exists: its own
+/// id and the money row it holds. `load_etransfer_by_key` returns the rendered
+/// response instead, which is the wrong shape for the release path.
+async fn load_etransfer_ids_by_key(
+    state: &AppState,
+    sender: Uuid,
+    key: &str,
+) -> Result<Option<(Uuid, Uuid)>, AppError> {
+    let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT etransfer_id, hold_transaction_id FROM interac_etransfers \
+         WHERE sender_customer_id = $1 AND idempotency_key = $2",
+    )
+    .bind(sender)
+    .bind(key)
+    .fetch_optional(&state.pool)
+    .await?;
+    // An outbound send always writes its hold, so a missing one here is a
+    // contract break rather than a state this path should tolerate silently.
+    Ok(row.map(|(id, hold)| (id, hold.unwrap_or(id))))
 }
 
 async fn load_etransfer(state: &AppState, id: Uuid) -> Result<EtransferResponse, AppError> {
