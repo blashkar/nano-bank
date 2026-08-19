@@ -1,0 +1,3 @@
+# Ad-hoc live-run recordings are local; the canonical ones are force-added.
+*/*.json
+!*/canonical.json
