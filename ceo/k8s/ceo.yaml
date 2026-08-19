@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ceo
+  namespace: nano-bank
+  labels: { app: ceo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ceo } }
+  template:
+    metadata: { labels: { app: ceo } }
+    spec:
+      containers:
+      - name: ceo
+        image: nano-ceo:dev
+        imagePullPolicy: Never
+        ports: [ { containerPort: 8099 } ]
+        envFrom:
+        - secretRef: { name: nano-agent-secrets }   # provides OLLAMA_API_KEY
+        env:
+        - { name: CFO_URL,            value: http://cfo:8089 }
+        - { name: COO_URL,            value: http://coo:8093 }
+        - { name: CTO_URL,            value: http://cto:8095 }
+        - { name: CXO_URL,            value: http://cxo:8098 }
+        - { name: OLLAMA_BASE_URL,    value: https://ollama.com/v1 }
+        - { name: CEO_MODEL,          value: kimi-k2.6 }
+        - { name: CEO_MODEL_FALLBACK, value: kimi-k2.6 }
+        - { name: API_PORT,           value: "8099" }
+        - { name: QDRANT_URL,         value: http://agent-qdrant:6333 }
+        - { name: MEMORY_NAMESPACE,   value: ceo }
+        - { name: DB_HOST,            value: postgres-service }
+        - { name: DB_PORT,            value: "5432" }
+        - { name: DB_NAME,            value: nano_bank_db }
+        - { name: DB_USER,            value: nanobank_user }
+        - { name: DB_PASSWORD,        value: "secure_nano_password_2024!" }
+        livenessProbe:
+          httpGet: { path: /livez, port: 8099 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet: { path: /health, port: 8099 }
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ceo
+  namespace: nano-bank
+spec:
+  selector: { app: ceo }
+  ports: [ { port: 8099, targetPort: 8099 } ]
