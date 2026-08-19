@@ -85,21 +85,41 @@ def beat_outcome(trace: list[dict], outcome_hint: str | None = None) -> dict:
 from datetime import datetime, timezone  # noqa: E402
 
 
-def _tool_output_field(output, key: str) -> str:
-    """Pull a field out of a tool event's `output`, which may be a dict OR a
-    str(dict)/JSON string (traces sometimes stringify tool results)."""
+def _payload_dict(output) -> dict:
+    """Recover the tool's return dict from a trace event's `output`. The real trace
+    stores str(ToolMessage) — `content='<json>' name='...' tool_call_id='...'` — so
+    the payload is the FIRST JSON object embedded in that string. Also handles a
+    bare dict, a plain JSON string, or a python dict-repr (test doubles)."""
     if isinstance(output, dict):
-        v = output.get(key)
-        return v if v is not None else ""
+        return output
     s = str(output or "")
-    for loader in (json.loads, ast.literal_eval):
+    i = s.find("{")
+    if i < 0:
+        return {}
+    frag = s[i:]
+    # Real path: a JSON object embedded in content='...'. raw_decode stops at the
+    # object's closing brace, ignoring the trailing ` name='...' tool_call_id=...`.
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(frag)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:  # noqa: BLE001
+        pass
+    # Fallback: a python dict-repr (single quotes) from a stringified plain dict.
+    for candidate in (frag, frag[: frag.rfind("}") + 1]):
         try:
-            d = loader(s)
-            if isinstance(d, dict) and d.get(key) is not None:
-                return d[key]
+            obj = ast.literal_eval(candidate)
+            if isinstance(obj, dict):
+                return obj
         except Exception:  # noqa: BLE001
             pass
-    return ""
+    return {}
+
+
+def _tool_output_field(output, key: str) -> str:
+    """Pull a field out of a tool event's `output` (see `_payload_dict`)."""
+    v = _payload_dict(output).get(key)
+    return v if v is not None else ""
 
 
 def board_contributions(trace: list[dict]) -> list[dict]:
