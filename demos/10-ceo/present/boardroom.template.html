@@ -118,8 +118,27 @@
   .caption .lead{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:5px;display:flex;gap:10px;align-items:center}
   .caption .lead .spk{color:var(--ac,#8a93a8);font-weight:600}
   .caption .lead .fired{color:var(--ceo)}
-  .caption .body{font-size:14.5px;line-height:1.5;color:#cdd5e6;max-height:8.6em;overflow:auto;white-space:pre-wrap}
+  .caption .lead .expand{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--ceo);
+    background:transparent;border:1px solid #3a4a78;border-radius:8px;padding:4px 10px;cursor:pointer;text-transform:uppercase}
+  .caption .lead .expand:hover{background:#18213e}
+  .caption .body{font-size:14.5px;line-height:1.55;color:#cdd5e6;max-height:9.4em;overflow:auto;white-space:pre-wrap;cursor:zoom-in}
   .caption .body::-webkit-scrollbar{width:8px} .caption .body::-webkit-scrollbar-thumb{background:#26304d;border-radius:8px}
+
+  /* ---- reader overlay: the full reasoning, readable ---- */
+  .reader{position:fixed;inset:0;background:rgba(6,10,22,.72);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:50;padding:24px}
+  .reader.open{display:flex}
+  .reader .card{width:min(760px,94vw);max-height:86vh;background:linear-gradient(180deg,#141d34,#0f1730);
+    border:1px solid var(--edge);border-radius:18px;box-shadow:0 40px 100px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden}
+  .reader .rhead{display:flex;align-items:center;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line)}
+  .reader .ricon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;
+    background:linear-gradient(180deg,#1b2440,#141d33);border:1px solid var(--edge)}
+  .reader .rwho{font-family:var(--disp);font-weight:700;font-size:18px;letter-spacing:.03em}
+  .reader .rsub{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .reader .rclose{margin-left:auto;background:#131c34;color:var(--text);border:1px solid var(--edge);border-radius:10px;
+    width:38px;height:38px;font-size:16px;cursor:pointer}
+  .reader .rbody{padding:20px 24px 26px;overflow:auto;font-size:15.5px;line-height:1.62;color:#dbe2f0;white-space:pre-wrap}
+  .reader .rbody strong{color:#fff;font-weight:600}
 
   /* ---- transport ---- */
   .transport{display:flex;align-items:center;gap:16px;padding:12px 4px 18px;border-top:1px solid var(--line)}
@@ -171,8 +190,19 @@
   </div>
 
   <div class="caption">
-    <div class="lead"><span id="capLead">TRANSCRIPT</span></div>
-    <div class="body" id="capBody">Press play to convene the board.</div>
+    <div class="lead"><span id="capLead">TRANSCRIPT</span><button class="expand" id="expandBtn">⤢ Read full</button></div>
+    <div class="body" id="capBody" title="Click to read the full transcript">Press play to convene the board.</div>
+  </div>
+
+  <div class="reader" id="reader" aria-hidden="true">
+    <div class="card">
+      <div class="rhead">
+        <div class="ricon" id="rIcon">⚖️</div>
+        <div><div class="rwho" id="rWho">CEO</div><div class="rsub" id="rSub">the chair</div></div>
+        <button class="rclose" id="rClose" title="Close (Esc)">✕</button>
+      </div>
+      <div class="rbody" id="rBody"></div>
+    </div>
   </div>
 
   <div class="transport">
@@ -222,11 +252,11 @@ function buildSteps(rec){
     for(const c of (b.contributions||[])){
       const full=clean(c.text), g=gist(c.text);
       if(!full || !g) continue;              // skip empty captures — only real speech balloons
-      steps.push({...beatMeta, speaker:c.officer, role:c.role, full, gist:g, acted:c.acted});
+      steps.push({...beatMeta, speaker:c.officer, role:c.role, full, raw:c.text, gist:g, acted:c.acted});
     }
     // the chair speaks last each beat
     steps.push({...beatMeta, speaker:'ceo', role:'chair',
-      full:clean(b.answer)||'(no summary captured)', gist:gist(b.answer)||'The chair sums up.',
+      full:clean(b.answer)||'(no summary captured)', raw:b.answer, gist:gist(b.answer)||'The chair sums up.',
       outcome:(b.outcome||{}).kind});
   }
   return steps;
@@ -348,14 +378,45 @@ Object.keys(SNAMES).forEach((k)=>{
   b.setAttribute('role','tab'); b.onclick=()=>loadSession(k); sess.appendChild(b);
 });
 
+// ---- full-transcript reader (the complete reasoning, readable) ----
+function mdLite(md){
+  const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return esc(md||'')
+    .replace(/`{1,3}([^`]*)`{1,3}/g,'$1')
+    .replace(/^#{1,6}\s*(.*)$/gm,'<strong>$1</strong>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|\n)\s*[-•]\s+/g,'$1• ');
+}
+function openReader(){
+  const s=STEPS[idx]; if(!s) return;
+  const off=OFF[s.speaker]||OFF.ceo;
+  const icon={cfo:'💰',coo:'🏭',cto:'🖥️',cxo:'🙂',ceo:'⚖️'}[s.speaker]||'🧑‍💼';
+  $('rIcon').textContent=icon; $('rIcon').style.borderColor=off.color;
+  $('rWho').textContent=off.label+(s.speaker==='ceo'?' — the chair':'');
+  $('rWho').style.color=off.color;
+  $('rSub').textContent='Beat '+s.beat+' · '+(s.title||'')+' · '+(s.role==='direct'?'directive':(s.speaker==='ceo'?'ruling / synthesis':'consulted'));
+  $('rBody').innerHTML=mdLite(s.raw||s.full);
+  $('rBody').scrollTop=0;
+  $('reader').classList.add('open'); $('reader').setAttribute('aria-hidden','false');
+  if(playing) stop();               // pause so you can read
+}
+function closeReader(){ $('reader').classList.remove('open'); $('reader').setAttribute('aria-hidden','true'); }
+$('expandBtn').onclick=openReader;
+$('capBody').onclick=openReader;
+$('rClose').onclick=closeReader;
+$('reader').onclick=e=>{ if(e.target===$('reader')) closeReader(); };
+
 $('play').onclick=toggle;
 $('next').onclick=()=>step(1);
 $('prev').onclick=()=>step(-1);
 $('speed').oninput=e=>{speed=parseFloat(e.target.value);$('speedv').textContent=speed.toFixed(1)+'×';if(playing)schedule();};
 $('progress').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();go(Math.round((e.clientX-r.left)/r.width*STEPS.length));};
 document.addEventListener('keydown',e=>{
+  if(e.code==='Escape'){ closeReader(); return; }
+  if($('reader').classList.contains('open')) return;   // reader owns the keyboard while open
   if(e.code==='Space'){e.preventDefault();toggle();}
   if(e.code==='ArrowRight')step(1); if(e.code==='ArrowLeft')step(-1);
+  if(e.code==='KeyF')openReader();
 });
 
 // boot: prefer debate, else the first available
