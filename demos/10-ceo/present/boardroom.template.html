@@ -97,7 +97,7 @@
   .seat.ceo .gavel{font-size:34px;line-height:1}
 
   /* speech balloon */
-  .balloon{position:absolute;max-width:min(330px,34vw);z-index:6;opacity:0;transform:scale(.9) translateY(6px);
+  .balloon{position:absolute;max-width:min(360px,38vw);z-index:6;opacity:0;transform:scale(.9) translateY(6px);
     transition:opacity .3s, transform .3s;pointer-events:none}
   .balloon.show{opacity:1;transform:scale(1) translateY(0)}
   .balloon .bub{position:relative;background:#f6f8ff;color:#131a2e;border-radius:16px;padding:13px 15px;
@@ -105,11 +105,13 @@
   .balloon .who{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
     color:var(--ac,#556);font-weight:600;margin-bottom:4px;display:flex;gap:6px;align-items:center}
   .balloon .who .chip{padding:1px 7px;border-radius:999px;background:var(--ac,#556);color:#fff;font-size:9px}
-  .balloon .txt{font-family:var(--body);font-size:14.5px;line-height:1.4;font-weight:500}
+  .balloon .txt{font-family:var(--body);font-size:14.5px;line-height:1.42;font-weight:500;max-height:9.6em;overflow:auto;min-height:1.2em}
   .balloon .tail{position:absolute;width:18px;height:18px;background:#f6f8ff;transform:rotate(45deg);border-radius:3px}
-  /* tail placement per corner */
-  .balloon.tl{right:auto;left:0} .balloon.tr{left:auto;right:0}
+  /* tail: default points DOWN (balloon sits above the seat) */
   .balloon .tail{bottom:-7px;left:28px}
+  .balloon.tr .tail{left:auto;right:28px}
+  /* balloon placed BELOW the seat (bottom-row officers) -> tail points UP */
+  .balloon.below .tail{top:-7px;bottom:auto}
 
   /* ---- caption / transcript strip ---- */
   .caption{border-top:1px solid var(--line);padding:12px 4px 6px;min-height:74px}
@@ -203,12 +205,13 @@ function clean(md){
     .replace(/\n{3,}/g,'\n\n').trim();
 }
 function gist(md){
-  const t = clean(md).replace(/\n+/g,' ');
+  const t = clean(md).replace(/\n+/g,' ').trim();
+  if(!t) return '';
   const sentences = t.match(/[^.!?]+[.!?]+/g) || [t];
   let out = '';
-  for(const s of sentences){ if((out+s).length>200 && out) break; out += s; }
+  for(const s of sentences){ if((out+s).length>300 && out) break; out += s; }
   out = (out||t).trim();
-  return out.length>230 ? out.slice(0,228).replace(/\s+\S*$/,'')+'…' : out;
+  return out.length>340 ? out.slice(0,338).replace(/\s+\S*$/,'')+'…' : out;
 }
 
 // ---- build a flat step timeline from a recording ----
@@ -217,30 +220,44 @@ function buildSteps(rec){
   for(const b of (rec.beats||[])){
     const beatMeta={beat:b.beat, title:b.title, question:b.question, shows:b.shows};
     for(const c of (b.contributions||[])){
-      steps.push({...beatMeta, speaker:c.officer, role:c.role,
-        full:clean(c.text)||'(the officer spoke; text not captured this run)',
-        gist:gist(c.text)|| (OFF[c.officer]?.label+' takes the floor.'),
-        acted: c.acted});
+      const full=clean(c.text), g=gist(c.text);
+      if(!full || !g) continue;              // skip empty captures — only real speech balloons
+      steps.push({...beatMeta, speaker:c.officer, role:c.role, full, gist:g, acted:c.acted});
     }
     // the chair speaks last each beat
     steps.push({...beatMeta, speaker:'ceo', role:'chair',
-      full:clean(b.answer), gist:gist(b.answer)||'The chair sums up.',
+      full:clean(b.answer)||'(no summary captured)', gist:gist(b.answer)||'The chair sums up.',
       outcome:(b.outcome||{}).kind});
   }
   return steps;
 }
 
 let SESSION='debate', STEPS=[], idx=0, playing=false, timer=null, speed=1, clock=0, clockTimer=null;
+let typeTimer=null;
+const REDUCE = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
 
 const $=id=>document.getElementById(id);
 function seat(o){return document.querySelector('.seat.'+o);}
+
+// stream text into an element, character by character ("coming in" as they speak)
+function typeInto(el, text){
+  clearInterval(typeTimer);
+  if(REDUCE){ el.textContent=text; return; }
+  el.textContent=''; let i=0; const total=text.length;
+  const per=Math.max(9, Math.min(34, 20/speed));   // faster at higher playback speed
+  typeTimer=setInterval(()=>{
+    i=Math.min(total, i + (total>240?2:1));
+    el.textContent=text.slice(0,i);
+    if(i>=total) clearInterval(typeTimer);
+  }, per);
+}
 
 function dwell(step){
   const words=(step.gist||'').split(/\s+/).length;
   return Math.min(7200, 2500 + words*130) / speed;
 }
 
-function render(){
+function render(animate=true){
   const s=STEPS[idx]; if(!s) return;
   const off=OFF[s.speaker]||OFF.ceo, ac=off.color;
   document.documentElement.style.setProperty('--ac',ac); // not needed globally but harmless
@@ -270,18 +287,21 @@ function render(){
   const bal=$('balloon'), st=seat(s.speaker), stage=st.closest('.stage');
   const sr=st.getBoundingClientRect(), gr=stage.getBoundingClientRect();
   bal.style.setProperty('--ac',ac);
-  const left = sr.left-gr.left + sr.width/2;
-  const top  = sr.top-gr.top;
-  const rightSide = left > gr.width/2;
-  bal.style.left = (rightSide? left-8 : left+8)+'px';
-  bal.style.top  = (top-14)+'px';
-  bal.style.transform = 'translate(-'+(rightSide?'100%':'0')+', -100%)';
+  const cx = sr.left-gr.left + sr.width/2;
+  const rightSide  = cx > gr.width/2;
+  const bottomSide = (sr.top-gr.top + sr.height/2) > gr.height/2 && s.speaker!=='ceo';
+  bal.style.left = (rightSide? cx-8 : cx+8)+'px';
+  bal.style.top  = bottomSide ? (sr.bottom-gr.top + 12)+'px' : (sr.top-gr.top - 12)+'px';
+  bal.style.transform = 'translate('+(rightSide?'-100%':'0')+','+(bottomSide?'0':'-100%')+')';
   bal.classList.toggle('tr', rightSide); bal.classList.toggle('tl', !rightSide);
+  bal.classList.toggle('below', bottomSide);
   const roleTag = s.role==='direct' ? 'directed' : (s.speaker==='ceo'?'chair':'speaks');
   $('balWho').innerHTML = '<span class="chip">'+off.label+'</span> '+roleTag +
      (s.acted===true?' · 🟢 lever fired':'') + (s.acted===false?' · 🟡 no action':'');
-  $('balTxt').textContent = s.gist;
-  requestAnimationFrame(()=>bal.classList.add('show'));
+  requestAnimationFrame(()=>{
+    bal.classList.add('show');
+    if(animate) typeInto($('balTxt'), s.gist); else $('balTxt').textContent = s.gist;
+  });
 
   // caption / transcript
   const lead = s.speaker==='ceo'
@@ -340,7 +360,7 @@ document.addEventListener('keydown',e=>{
 
 // boot: prefer debate, else the first available
 loadSession((RECORDINGS.debate&&(RECORDINGS.debate.beats||[]).length)?'debate':'meeting');
-window.addEventListener('resize',()=>render());
+window.addEventListener('resize',()=>render(false));
 </script>
 </body>
 </html>
