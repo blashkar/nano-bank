@@ -147,6 +147,11 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cost_centre TEXT",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS economic_event_id UUID",
         "CREATE INDEX IF NOT EXISTS idx_transactions_event ON transactions(economic_event_id)",
+        // Card auth_id -> capture, for the fraud-link rail resolver's cards arm
+        // (#70). Partial: only card captures carry the key. Without it every
+        // card linkage lookup is a sequential scan of `transactions`.
+        "CREATE INDEX IF NOT EXISTS idx_transactions_auth_id \
+         ON transactions((metadata->>'auth_id')) WHERE metadata ? 'auth_id'",
         // Carries the fraud linkage across the origination → settlement boundary
         // for AFT (#54): an entry is screened when it is created but writes no
         // transactions row until the batch settles, so without somewhere to rest

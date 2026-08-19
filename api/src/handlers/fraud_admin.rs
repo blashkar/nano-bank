@@ -198,6 +198,21 @@ async fn fraud_link_rail(
         "interac" => "SELECT hold_transaction_id FROM interac_etransfers WHERE etransfer_id = $1",
         "lynx" => "SELECT settlement_transaction_id FROM lynx_wires WHERE wire_id = $1",
         "aft" => "SELECT settle_transaction_id FROM aft_entries WHERE entry_id = $1",
+        // Cards are the odd one out, and #66 deferred them for it. The other
+        // three read a column off a row keyed by the rail id; a card is screened
+        // at authorize and its money row is only written at capture, which
+        // stamps the auth_id into `metadata` (cards.rs). So the lookup is on
+        // JSON, matched by the partial expression index idx_transactions_auth_id
+        // — the predicate has to stay exactly this shape or the index is ignored
+        // and this becomes a sequential scan of the largest table.
+        //
+        // `$1::text` keeps the bind uniform with the other arms: Postgres
+        // renders uuid as the same lowercase-hyphenated form serde wrote into
+        // the JSON, so a Uuid parameter compares correctly against `->>`.
+        "cards" => {
+            "SELECT transaction_id FROM transactions \
+             WHERE metadata ? 'auth_id' AND metadata->>'auth_id' = $1::text"
+        }
         other => return Err(AppError::BadRequest(format!("unknown rail: {other}"))),
     };
 

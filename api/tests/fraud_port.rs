@@ -1226,7 +1226,9 @@ async fn rail_fraud_link_400_for_an_unknown_rail() {
     let c = client();
     require_stack!(&c);
     let svc = service_token(&c).await;
-    let r = fraud_link_rail(&c, &svc, "cards", Uuid::new_v4()).await;
+    // Was "cards", which #70 makes a real arm. A rail name has to be one the
+    // bank genuinely does not serve for this to assert anything.
+    let r = fraud_link_rail(&c, &svc, "cheque", Uuid::new_v4()).await;
     assert_eq!(r.status().as_u16(), 400, "unknown rail is a 400");
 }
 
@@ -1254,6 +1256,113 @@ async fn assert_engine_decision_exists(_c: &reqwest::Client, op_id: &str) {
     assert_eq!(
         seen, 1,
         "operation_id {op_id} must name a real engine decision"
+    );
+}
+
+/// Tier 2 — engine mode: a card `auth_id` resolves through the rail route (#70).
+///
+/// Cards were deferred from #66's uniform match because they are the one rail
+/// whose linkage is not a column on a row keyed by the rail id: screening
+/// happens at authorize, the money row appears at capture, and the join is the
+/// `auth_id` stamped into `transactions.metadata`. Until this arm existed, a
+/// realize run came back with ~45% of its movements unlinkable — the decisions
+/// were made, they just could not be addressed.
+///
+/// Asserted as *equal to* the transaction-keyed answer rather than merely
+/// non-null: two routes disagreeing about one money row is worse than one of
+/// them not existing, because a label attaches to whichever the caller asked.
+#[tokio::test]
+async fn rail_fraud_link_resolves_a_captured_card_by_auth_id() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+    let card = c
+        .post(format!("{}/api/v1/accounts", base_url()))
+        .bearer_auth(&token)
+        .json(&json!({ "account_type": "credit_card" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(card.status().is_success(), "create card: {}", card.status());
+    let cv: Value = card.json().await.unwrap();
+    let card_id = Uuid::parse_str(cv["account_id"].as_str().unwrap()).unwrap();
+
+    let svc = service_token(&c).await;
+    let auth = c
+        .post(format!("{}/api/v1/cards/authorize", base_url()))
+        .bearer_auth(&svc)
+        .json(&json!({ "account_id": card_id, "amount": 61.25, "merchant": "Rail Cards Co" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(auth.status().is_success(), "authorize: {}", auth.status());
+    let av: Value = auth.json().await.unwrap();
+    assert_eq!(av["status"], "approved", "authorize should approve: {av}");
+    let auth_id = Uuid::parse_str(av["auth_id"].as_str().expect("auth_id")).unwrap();
+
+    // Before capture there is no money row, so there is nothing to resolve —
+    // the same state an unsettled AFT entry is in, and it must 404 rather than
+    // 500 or answer nulls.
+    let before = fraud_link_rail(&c, &svc, "cards", auth_id).await;
+    assert_eq!(
+        before.status().as_u16(),
+        404,
+        "an authorized-but-uncaptured card has no money row yet"
+    );
+
+    let cap = c
+        .post(format!("{}/api/v1/cards/capture", base_url()))
+        .bearer_auth(&svc)
+        .json(&json!({ "auth_id": auth_id }))
+        .send()
+        .await
+        .unwrap();
+    assert!(cap.status().is_success(), "capture: {}", cap.status());
+    let cvj: Value = cap.json().await.unwrap();
+    let txn_id = Uuid::parse_str(cvj["transaction_id"].as_str().expect("transaction_id")).unwrap();
+
+    let by_rail: Value = fraud_link_rail(&c, &svc, "cards", auth_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let op_id = by_rail["operation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a captured card must resolve: {by_rail}"));
+
+    let by_txn: Value = fraud_link(&c, &svc, txn_id).await.json().await.unwrap();
+    assert_eq!(by_rail, by_txn, "the two entry points must not disagree");
+
+    // And it names a decision the engine actually recorded.
+    let Some(engine) = engine_db().await else {
+        return;
+    };
+    let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
+        .bind(Uuid::parse_str(op_id).unwrap())
+        .fetch_one(&engine)
+        .await
+        .unwrap();
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
+}
+
+/// The cards arm sits on the service plane like every other (#46).
+#[tokio::test]
+async fn rail_fraud_link_cards_refuses_a_customer_token() {
+    let c = client();
+    require_stack!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+
+    let r = fraud_link_rail(&c, &token, "cards", Uuid::new_v4()).await;
+    assert!(
+        matches!(r.status().as_u16(), 401 | 403),
+        "a customer token must not reach a card linkage: {}",
+        r.status()
     );
 }
 

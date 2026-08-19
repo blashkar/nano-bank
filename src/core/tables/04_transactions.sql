@@ -120,6 +120,15 @@ CREATE INDEX idx_transactions_type ON transactions(transaction_type);
 CREATE INDEX idx_transactions_initiated_by ON transactions(initiated_by);
 CREATE INDEX idx_transactions_created_at ON transactions(created_at);
 CREATE INDEX idx_transactions_external_ref ON transactions(external_reference);
+-- Resolve a card auth_id to the capture that settled it (#70). Cards are the one
+-- rail whose linkage is not a column on a keyed row: screening happens at
+-- authorize and the money row is written at capture, which stamps the auth_id
+-- into metadata. Expression index because that is what the resolver filters on,
+-- and partial because only card captures carry the key — `transactions` is the
+-- table expected to grow without bound, so an unindexed scan per lookup is a
+-- cliff, not an inefficiency.
+CREATE INDEX idx_transactions_auth_id ON transactions((metadata->>'auth_id'))
+    WHERE metadata ? 'auth_id';
 -- Idempotency guard for transfers: at most one transfer per
 -- (initiator, idempotency_key, mandate). Closes the find-then-insert race — a
 -- concurrent same-key transfer trips this instead of double-posting the transfer
