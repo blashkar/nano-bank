@@ -43,7 +43,16 @@
   .sessions{margin-left:auto;display:flex;gap:6px;background:#0c1222;border:1px solid var(--edge);border-radius:999px;padding:4px}
   .sessions button{font-family:var(--mono);font-size:12px;letter-spacing:.05em;color:var(--muted);background:transparent;border:0;padding:7px 14px;border-radius:999px;cursor:pointer;transition:.2s}
   .sessions button[aria-selected="true"]{color:var(--ink);background:var(--text)}
+  .capbtn{font-family:var(--mono);font-size:11px;letter-spacing:.07em;color:var(--ceo);background:transparent;border:1px solid #3a4a78;
+    border-radius:999px;padding:7px 14px;cursor:pointer;text-transform:uppercase;transition:.15s}
+  .capbtn:hover{background:#18213e} .capbtn:disabled{opacity:.45;cursor:default}
   .clock{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:52px;text-align:right}
+  .capstatus{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:60;background:#141d34;border:1px solid var(--edge);
+    border-radius:12px;padding:12px 18px;display:none;align-items:center;gap:12px;box-shadow:0 20px 50px rgba(0,0,0,.5);
+    font-family:var(--mono);font-size:12px;color:var(--text);max-width:80vw}
+  .capstatus.show{display:flex}
+  .capstatus .sp{width:14px;height:14px;border:2px solid #3a4a78;border-top-color:var(--ceo);border-radius:50%;animation:spin .8s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
 
   /* agenda ribbon */
   .agenda{display:flex;align-items:baseline;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line)}
@@ -106,6 +115,10 @@
     color:var(--ac,#556);font-weight:600;margin-bottom:4px;display:flex;gap:6px;align-items:center}
   .balloon .who .chip{padding:1px 7px;border-radius:999px;background:var(--ac,#556);color:#fff;font-size:9px}
   .balloon .txt{font-family:var(--body);font-size:14.5px;line-height:1.42;font-weight:500;max-height:9.6em;overflow:auto;min-height:1.2em}
+  /* the chair speaks at length — a bigger bubble so the ruling isn't clipped */
+  .balloon.chair{max-width:min(500px,48vw)}
+  .balloon.chair .bub{padding:15px 18px}
+  .balloon.chair .txt{font-size:15px;line-height:1.5;max-height:15em}
   .balloon .tail{position:absolute;width:18px;height:18px;background:#f6f8ff;transform:rotate(45deg);border-radius:3px}
   /* tail: default points DOWN (balloon sits above the seat) */
   .balloon .tail{bottom:-7px;left:28px}
@@ -169,8 +182,10 @@
     <span class="live"><span class="dot"></span>LIVE</span>
     <span class="brand">nano-bank · <b>C-SUITE</b> boardroom</span>
     <div class="sessions" role="tablist" id="sessions"></div>
+    <button class="capbtn" id="captureBtn" title="Record a fresh session live against the CEO, then play it">⦿ Capture live</button>
     <span class="clock" id="clock">00:00</span>
   </div>
+  <div class="capstatus" id="capStatus"><span class="sp"></span><span id="capMsg">Starting…</span></div>
 
   <div class="agenda">
     <span class="eyebrow" id="beatEyebrow">AGENDA</span>
@@ -228,20 +243,23 @@ const SEAT_POS = { // % on the stage, for the balloon anchor + spotlight beam
 };
 
 // ---- markdown-ish -> readable plain text ----
+function unesc(s){ return (s||'').replace(/\\r\\n|\\n/g,'\n').replace(/\\t/g,' ').replace(/\\"/g,'"'); }
 function clean(md){
-  return (md||'')
+  return unesc(md)
     .replace(/`{1,3}/g,'').replace(/\*\*/g,'').replace(/[*_]/g,'')
     .replace(/^#{1,6}\s*/gm,'').replace(/^\s*[-•]\s*/gm,'• ')
-    .replace(/\n{3,}/g,'\n\n').trim();
+    .replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
 }
-function gist(md){
-  const t = clean(md).replace(/\n+/g,' ').trim();
+function gist(md, max){
+  max = max || 340;
+  const t = clean(md).replace(/\n+/g,' ').replace(/\s{2,}/g,' ').trim();
   if(!t) return '';
   const sentences = t.match(/[^.!?]+[.!?]+/g) || [t];
+  const soft = Math.round(max*0.9);
   let out = '';
-  for(const s of sentences){ if((out+s).length>300 && out) break; out += s; }
+  for(const s of sentences){ if((out+s).length>soft && out) break; out += s; }
   out = (out||t).trim();
-  return out.length>340 ? out.slice(0,338).replace(/\s+\S*$/,'')+'…' : out;
+  return out.length>max ? out.slice(0,max-2).replace(/\s+\S*$/,'')+'…' : out;
 }
 
 // ---- build a flat step timeline from a recording ----
@@ -254,9 +272,9 @@ function buildSteps(rec){
       if(!full || !g) continue;              // skip empty captures — only real speech balloons
       steps.push({...beatMeta, speaker:c.officer, role:c.role, full, raw:c.text, gist:g, acted:c.acted});
     }
-    // the chair speaks last each beat
+    // the chair speaks last each beat — a longer gist (the ruling/synthesis carries weight)
     steps.push({...beatMeta, speaker:'ceo', role:'chair',
-      full:clean(b.answer)||'(no summary captured)', raw:b.answer, gist:gist(b.answer)||'The chair sums up.',
+      full:clean(b.answer)||'(no summary captured)', raw:b.answer, gist:gist(b.answer,640)||'The chair sums up.',
       outcome:(b.outcome||{}).kind});
   }
   return steps;
@@ -325,6 +343,7 @@ function render(animate=true){
   bal.style.transform = 'translate('+(rightSide?'-100%':'0')+','+(bottomSide?'0':'-100%')+')';
   bal.classList.toggle('tr', rightSide); bal.classList.toggle('tl', !rightSide);
   bal.classList.toggle('below', bottomSide);
+  bal.classList.toggle('chair', s.speaker==='ceo');
   const roleTag = s.role==='direct' ? 'directed' : (s.speaker==='ceo'?'chair':'speaks');
   $('balWho').innerHTML = '<span class="chip">'+off.label+'</span> '+roleTag +
      (s.acted===true?' · 🟢 lever fired':'') + (s.acted===false?' · 🟡 no action':'');
@@ -381,11 +400,12 @@ Object.keys(SNAMES).forEach((k)=>{
 // ---- full-transcript reader (the complete reasoning, readable) ----
 function mdLite(md){
   const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return esc(md||'')
+  return esc(unesc(md))
     .replace(/`{1,3}([^`]*)`{1,3}/g,'$1')
     .replace(/^#{1,6}\s*(.*)$/gm,'<strong>$1</strong>')
     .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-    .replace(/(^|\n)\s*[-•]\s+/g,'$1• ');
+    .replace(/(^|\n)\s*[-•]\s+/g,'$1• ')
+    .replace(/\n{3,}/g,'\n\n');
 }
 function openReader(){
   const s=STEPS[idx]; if(!s) return;
@@ -405,6 +425,36 @@ $('expandBtn').onclick=openReader;
 $('capBody').onclick=openReader;
 $('rClose').onclick=closeReader;
 $('reader').onclick=e=>{ if(e.target===$('reader')) closeReader(); };
+
+// ---- capture a fresh session live, then play it ----
+async function pollCapture(){
+  let s;
+  try{ s=await (await fetch('/api/capture/status')).json(); }
+  catch(_){ $('capMsg').textContent='⚠ capture server not reachable'; $('captureBtn').disabled=false; return; }
+  const prog = s.total ? '  ('+s.beats+'/'+s.total+')' : '';
+  $('capMsg').textContent = (s.session?s.session.toUpperCase()+' · ':'') + (s.message||'Capturing…') + prog;
+  if(s.running){ setTimeout(pollCapture, 1500); return; }
+  if(s.ok){ $('capMsg').textContent='✓ '+s.message; setTimeout(()=>location.reload(), 900); }
+  else{
+    $('capMsg').textContent='⚠ '+(s.message||'capture failed');
+    $('captureBtn').disabled=false;
+    setTimeout(()=>$('capStatus').classList.remove('show'), 5000);
+  }
+}
+if(location.protocol==='file:'){
+  $('captureBtn').disabled=true;
+  $('captureBtn').title='Serve via boardroom_server.py to capture live';
+}
+$('captureBtn').onclick=async ()=>{
+  if(!confirm('Record a fresh '+SESSION.toUpperCase()+' session live against the CEO?\n\nThis drives the real agents and can take a few minutes (the officers respond one at a time).')) return;
+  stop(); $('captureBtn').disabled=true;
+  $('capStatus').classList.add('show'); $('capMsg').textContent='Starting…';
+  try{
+    const r=await fetch('/api/capture',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:SESSION})});
+    if(r.status===409) $('capMsg').textContent='A capture is already running…';
+  }catch(_){ $('capMsg').textContent='⚠ capture server not reachable (serve via boardroom_server.py)'; $('captureBtn').disabled=false; return; }
+  pollCapture();
+};
 
 $('play').onclick=toggle;
 $('next').onclick=()=>step(1);
