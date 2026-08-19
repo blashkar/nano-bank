@@ -20,3 +20,20 @@ officers, which are directable vs consult-only).
 
 The **minutes** chip on the directive beats reports whether a lever actually fired
 (🟢) or the officer took no action (🟡) — read back from the tamper-evident ledger.
+
+## 🎬 Animated boardroom (standalone)
+
+A self-contained animated view of a recorded session — the officers as stations
+around a lit round table, the CEO in the chair, a spotlight that swings to whoever
+speaks and a speech balloon popping from them, with a broadcast caption strip
+carrying their full words. Zero model delay: it replays the captured recording.
+
+    demos/10-ceo/present/boardroom-serve.sh        # -> http://localhost:8520/boardroom.html
+
+Or build once and open the file directly:
+
+    python3 demos/10-ceo/present/build_boardroom.py   # writes boardroom.html (recordings inlined)
+
+Controls: ▶ Convene / Pause (Space), ⏮ ⏭ step (arrows), a speed slider, a progress
+scrubber, and a Meeting / Debate session switch. Rebuilt from the same canonical
+recordings the console replays; re-run a capture to refresh them.

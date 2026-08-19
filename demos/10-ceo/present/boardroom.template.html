@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nano-bank · C-suite boardroom</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0B1020; --ink2:#0e1424; --panel:#141A2E; --panel-2:#1b2440;
+    --edge:#26304d; --line:#20283f;
+    --text:#E8ECF5; --muted:#8A93A8; --faint:#5b6480;
+    --cfo:#3FB68B; --coo:#E0A64B; --cto:#4C8DF6; --cxo:#E5679B; --ceo:#D9B65A;
+    --signal:#D9B65A; --danger:#E5679B;
+    --disp:'Space Grotesk',system-ui,sans-serif;
+    --body:'Inter',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --stage-h: 60vh;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(1200px 700px at 50% -10%, #16203a 0%, transparent 60%),
+      radial-gradient(900px 600px at 50% 120%, #101a30 0%, transparent 55%),
+      var(--ink);
+    color:var(--text); font-family:var(--body);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  body{background-color:var(--ink)}
+  .wrap{display:flex;flex-direction:column;height:100vh;max-width:1500px;margin:0 auto;padding:0 clamp(12px,3vw,32px)}
+
+  /* ---- broadcast bar ---- */
+  .top{display:flex;align-items:center;gap:18px;padding:16px 4px 12px;border-bottom:1px solid var(--line)}
+  .live{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:#ff5d6c;font-weight:600}
+  .live .dot{width:9px;height:9px;border-radius:50%;background:#ff5d6c;box-shadow:0 0 0 0 rgba(255,93,108,.7);animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,93,108,.6)}70%{box-shadow:0 0 0 10px rgba(255,93,108,0)}100%{box-shadow:0 0 0 0 rgba(255,93,108,0)}}
+  .brand{font-family:var(--disp);font-weight:700;letter-spacing:.02em;font-size:clamp(15px,1.5vw,19px)}
+  .brand b{color:var(--ceo)}
+  .sessions{margin-left:auto;display:flex;gap:6px;background:#0c1222;border:1px solid var(--edge);border-radius:999px;padding:4px}
+  .sessions button{font-family:var(--mono);font-size:12px;letter-spacing:.05em;color:var(--muted);background:transparent;border:0;padding:7px 14px;border-radius:999px;cursor:pointer;transition:.2s}
+  .sessions button[aria-selected="true"]{color:var(--ink);background:var(--text)}
+  .clock{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:52px;text-align:right}
+
+  /* agenda ribbon */
+  .agenda{display:flex;align-items:baseline;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line)}
+  .agenda .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
+  .agenda .q{font-family:var(--disp);font-weight:600;font-size:clamp(15px,1.7vw,21px);color:var(--text);line-height:1.25;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ---- stage ---- */
+  .stage{position:relative;flex:1 1 auto;min-height:340px}
+  .table{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(64vh,58vw,620px);aspect-ratio:1/1;border-radius:50%;
+    background:
+      radial-gradient(circle at 50% 42%, #1c2748 0%, #141d36 46%, #0f1730 100%);
+    box-shadow:inset 0 0 0 1px #2a3559, inset 0 0 70px rgba(0,0,0,.55), 0 30px 90px rgba(0,0,0,.55);
+  }
+  .table::after{ /* felt grain ring */
+    content:"";position:absolute;inset:8%;border-radius:50%;border:1px dashed rgba(120,140,190,.14)
+  }
+  /* swinging spotlight */
+  .spot{position:absolute;left:50%;top:50%;width:74%;height:74%;transform:translate(-50%,-50%);
+    border-radius:50%;pointer-events:none;opacity:.0;transition:opacity .5s}
+  .spot.on{opacity:1}
+  .spot .beam{position:absolute;inset:0;border-radius:50%;
+    background:radial-gradient(120px 120px at var(--sx,50%) var(--sy,50%), var(--spotc,#fff) 0%, transparent 62%);
+    opacity:.22;transition:all .55s cubic-bezier(.5,.05,.2,1)}
+
+  /* stations */
+  .seat{position:absolute;transform:translate(-50%,-50%);width:132px;text-align:center;transition:transform .35s cubic-bezier(.34,1.3,.5,1)}
+  .seat .card{
+    width:96px;height:96px;margin:0 auto;border-radius:22px;display:flex;align-items:center;justify-content:center;
+    font-size:40px;background:linear-gradient(180deg,#1a2340,#121a30);border:1px solid var(--edge);
+    box-shadow:0 10px 24px rgba(0,0,0,.45);position:relative;transition:.35s}
+  .seat .ring{position:absolute;inset:-5px;border-radius:26px;border:2px solid transparent;transition:.35s}
+  .seat .name{margin-top:9px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;font-size:14px}
+  .seat .role{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin-top:1px}
+  .seat.active{transform:translate(-50%,-50%) scale(1.12)}
+  .seat.active .card{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac),0 0 34px -4px var(--ac),0 12px 30px rgba(0,0,0,.5);background:linear-gradient(180deg,#1e294a,#141d34)}
+  .seat.active .ring{border-color:var(--ac);box-shadow:0 0 24px -2px var(--ac);animation:ringpulse 2.2s infinite}
+  .seat.active .name{color:var(--ac)}
+  .seat.dim{opacity:.4;filter:saturate(.6)}
+  @keyframes ringpulse{0%,100%{opacity:.55}50%{opacity:1}}
+
+  .seat.cxo{left:24%;top:27%} .seat.cto{left:76%;top:27%}
+  .seat.cfo{left:24%;top:73%} .seat.coo{left:76%;top:73%}
+  .seat.ceo{left:50%;top:50%;width:150px}
+  .seat.ceo .card{width:118px;height:118px;border-radius:26px;font-size:20px;flex-direction:column;gap:2px;
+    background:linear-gradient(180deg,#20264a,#171f37)}
+  .seat.ceo .card{background:linear-gradient(180deg,#20264a,#171f37)}
+  .seat.ceo .chairlbl{font-family:var(--mono);font-size:9px;letter-spacing:.18em;color:var(--ceo);text-transform:uppercase}
+  .seat.ceo .gavel{font-size:34px;line-height:1}
+
+  /* speech balloon */
+  .balloon{position:absolute;max-width:min(330px,34vw);z-index:6;opacity:0;transform:scale(.9) translateY(6px);
+    transition:opacity .3s, transform .3s;pointer-events:none}
+  .balloon.show{opacity:1;transform:scale(1) translateY(0)}
+  .balloon .bub{position:relative;background:#f6f8ff;color:#131a2e;border-radius:16px;padding:13px 15px;
+    box-shadow:0 18px 40px rgba(0,0,0,.5);border:1px solid #fff}
+  .balloon .who{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ac,#556);font-weight:600;margin-bottom:4px;display:flex;gap:6px;align-items:center}
+  .balloon .who .chip{padding:1px 7px;border-radius:999px;background:var(--ac,#556);color:#fff;font-size:9px}
+  .balloon .txt{font-family:var(--body);font-size:14.5px;line-height:1.4;font-weight:500}
+  .balloon .tail{position:absolute;width:18px;height:18px;background:#f6f8ff;transform:rotate(45deg);border-radius:3px}
+  /* tail placement per corner */
+  .balloon.tl{right:auto;left:0} .balloon.tr{left:auto;right:0}
+  .balloon .tail{bottom:-7px;left:28px}
+
+  /* ---- caption / transcript strip ---- */
+  .caption{border-top:1px solid var(--line);padding:12px 4px 6px;min-height:74px}
+  .caption .lead{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:5px;display:flex;gap:10px;align-items:center}
+  .caption .lead .spk{color:var(--ac,#8a93a8);font-weight:600}
+  .caption .lead .fired{color:var(--ceo)}
+  .caption .body{font-size:14.5px;line-height:1.5;color:#cdd5e6;max-height:8.6em;overflow:auto;white-space:pre-wrap}
+  .caption .body::-webkit-scrollbar{width:8px} .caption .body::-webkit-scrollbar-thumb{background:#26304d;border-radius:8px}
+
+  /* ---- transport ---- */
+  .transport{display:flex;align-items:center;gap:16px;padding:12px 4px 18px;border-top:1px solid var(--line)}
+  .tbtn{background:#131c34;color:var(--text);border:1px solid var(--edge);border-radius:12px;height:44px;min-width:44px;padding:0 14px;
+    font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.15s}
+  .tbtn:hover{border-color:#3a4a78}
+  .tbtn:hover{border-color:#3a4a78}
+  .tbtn.play{background:var(--ceo);color:#1a1400;border-color:var(--ceo);font-weight:700;min-width:120px;font-family:var(--disp)}
+  .progress{flex:1;height:8px;background:#111a30;border-radius:8px;overflow:hidden;cursor:pointer;border:1px solid var(--line)}
+  .progress .fill{height:100%;width:0;background:linear-gradient(90deg,var(--ceo),#f0d98a);transition:width .3s linear}
+  .meta{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:190px;text-align:right}
+  .meta b{color:var(--text)}
+  .speed{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .speed input{accent-color:var(--ceo)}
+
+  @media (max-width:720px){
+    .seat{width:104px}.seat .card{width:74px;height:74px;font-size:30px}
+    .balloon{max-width:70vw}.meta{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <span class="live"><span class="dot"></span>LIVE</span>
+    <span class="brand">nano-bank · <b>C-SUITE</b> boardroom</span>
+    <div class="sessions" role="tablist" id="sessions"></div>
+    <span class="clock" id="clock">00:00</span>
+  </div>
+
+  <div class="agenda">
+    <span class="eyebrow" id="beatEyebrow">AGENDA</span>
+    <span class="q" id="agendaQ">—</span>
+  </div>
+
+  <div class="stage">
+    <div class="table"><div class="spot" id="spot"><div class="beam"></div></div></div>
+
+    <div class="seat cxo" data-off="cxo"><div class="ring"></div><div class="card">🙂</div><div class="name">CXO</div><div class="role">experience</div></div>
+    <div class="seat cto" data-off="cto"><div class="ring"></div><div class="card">🖥️</div><div class="name">CTO</div><div class="role">platform</div></div>
+    <div class="seat cfo" data-off="cfo"><div class="ring"></div><div class="card">💰</div><div class="name">CFO</div><div class="role">the books</div></div>
+    <div class="seat coo" data-off="coo"><div class="ring"></div><div class="card">🏭</div><div class="name">COO</div><div class="role">operations</div></div>
+    <div class="seat ceo" data-off="ceo"><div class="ring"></div><div class="card"><span class="gavel">⚖️</span><span class="chairlbl">Chair</span></div><div class="name">CEO</div><div class="role">chief executive</div></div>
+
+    <div class="balloon" id="balloon"><div class="bub"><div class="who" id="balWho"></div><div class="txt" id="balTxt"></div><div class="tail"></div></div></div>
+  </div>
+
+  <div class="caption">
+    <div class="lead"><span id="capLead">TRANSCRIPT</span></div>
+    <div class="body" id="capBody">Press play to convene the board.</div>
+  </div>
+
+  <div class="transport">
+    <button class="tbtn" id="prev" title="Previous speaker">⏮</button>
+    <button class="tbtn play" id="play">▶ Convene</button>
+    <button class="tbtn" id="next" title="Next speaker">⏭</button>
+    <div class="progress" id="progress"><div class="fill" id="fill"></div></div>
+    <div class="speed">SPEED <input id="speed" type="range" min="0.5" max="2" step="0.25" value="1"><span id="speedv">1.0×</span></div>
+    <div class="meta" id="meta">—</div>
+  </div>
+</div>
+
+<script>
+const RECORDINGS = /*__RECORDINGS__*/ {"meeting":{"beats":[]},"debate":{"beats":[]}};
+
+const OFF = {
+  cfo:{color:'#3FB68B', label:'CFO'}, coo:{color:'#E0A64B', label:'COO'},
+  cto:{color:'#4C8DF6', label:'CTO'}, cxo:{color:'#E5679B', label:'CXO'},
+  ceo:{color:'#D9B65A', label:'CEO'},
+};
+const SEAT_POS = { // % on the stage, for the balloon anchor + spotlight beam
+  cxo:[24,27], cto:[76,27], cfo:[24,73], coo:[76,73], ceo:[50,50]
+};
+
+// ---- markdown-ish -> readable plain text ----
+function clean(md){
+  return (md||'')
+    .replace(/`{1,3}/g,'').replace(/\*\*/g,'').replace(/[*_]/g,'')
+    .replace(/^#{1,6}\s*/gm,'').replace(/^\s*[-•]\s*/gm,'• ')
+    .replace(/\n{3,}/g,'\n\n').trim();
+}
+function gist(md){
+  const t = clean(md).replace(/\n+/g,' ');
+  const sentences = t.match(/[^.!?]+[.!?]+/g) || [t];
+  let out = '';
+  for(const s of sentences){ if((out+s).length>200 && out) break; out += s; }
+  out = (out||t).trim();
+  return out.length>230 ? out.slice(0,228).replace(/\s+\S*$/,'')+'…' : out;
+}
+
+// ---- build a flat step timeline from a recording ----
+function buildSteps(rec){
+  const steps=[];
+  for(const b of (rec.beats||[])){
+    const beatMeta={beat:b.beat, title:b.title, question:b.question, shows:b.shows};
+    for(const c of (b.contributions||[])){
+      steps.push({...beatMeta, speaker:c.officer, role:c.role,
+        full:clean(c.text)||'(the officer spoke; text not captured this run)',
+        gist:gist(c.text)|| (OFF[c.officer]?.label+' takes the floor.'),
+        acted: c.acted});
+    }
+    // the chair speaks last each beat
+    steps.push({...beatMeta, speaker:'ceo', role:'chair',
+      full:clean(b.answer), gist:gist(b.answer)||'The chair sums up.',
+      outcome:(b.outcome||{}).kind});
+  }
+  return steps;
+}
+
+let SESSION='debate', STEPS=[], idx=0, playing=false, timer=null, speed=1, clock=0, clockTimer=null;
+
+const $=id=>document.getElementById(id);
+function seat(o){return document.querySelector('.seat.'+o);}
+
+function dwell(step){
+  const words=(step.gist||'').split(/\s+/).length;
+  return Math.min(7200, 2500 + words*130) / speed;
+}
+
+function render(){
+  const s=STEPS[idx]; if(!s) return;
+  const off=OFF[s.speaker]||OFF.ceo, ac=off.color;
+  document.documentElement.style.setProperty('--ac',ac); // not needed globally but harmless
+
+  // agenda / beat labels
+  $('beatEyebrow').textContent = 'BEAT '+s.beat+' · '+ (s.title||'');
+  $('agendaQ').textContent = s.question||'';
+  const totalBeats = new Set(STEPS.map(x=>x.beat)).size;
+  $('meta').innerHTML = 'Beat <b>'+s.beat+'</b>/'+totalBeats+' · step <b>'+(idx+1)+'</b>/'+STEPS.length;
+  $('fill').style.width = ((idx+1)/STEPS.length*100)+'%';
+
+  // seats: active + dim others
+  document.querySelectorAll('.seat').forEach(el=>{
+    const o=el.dataset.off; el.classList.remove('active','dim');
+    el.style.setProperty('--ac', OFF[o].color);
+    if(o===s.speaker) el.classList.add('active'); else el.classList.add('dim');
+  });
+
+  // spotlight beam swings to the speaker
+  const [sx,sy]=SEAT_POS[s.speaker]||[50,50];
+  const spot=$('spot'); spot.classList.add('on');
+  spot.style.setProperty('--spotc',ac);
+  spot.querySelector('.beam').style.setProperty('--sx',sx+'%');
+  spot.querySelector('.beam').style.setProperty('--sy',sy+'%');
+
+  // balloon at the speaker
+  const bal=$('balloon'), st=seat(s.speaker), stage=st.closest('.stage');
+  const sr=st.getBoundingClientRect(), gr=stage.getBoundingClientRect();
+  bal.style.setProperty('--ac',ac);
+  const left = sr.left-gr.left + sr.width/2;
+  const top  = sr.top-gr.top;
+  const rightSide = left > gr.width/2;
+  bal.style.left = (rightSide? left-8 : left+8)+'px';
+  bal.style.top  = (top-14)+'px';
+  bal.style.transform = 'translate(-'+(rightSide?'100%':'0')+', -100%)';
+  bal.classList.toggle('tr', rightSide); bal.classList.toggle('tl', !rightSide);
+  const roleTag = s.role==='direct' ? 'directed' : (s.speaker==='ceo'?'chair':'speaks');
+  $('balWho').innerHTML = '<span class="chip">'+off.label+'</span> '+roleTag +
+     (s.acted===true?' · 🟢 lever fired':'') + (s.acted===false?' · 🟡 no action':'');
+  $('balTxt').textContent = s.gist;
+  requestAnimationFrame(()=>bal.classList.add('show'));
+
+  // caption / transcript
+  const lead = s.speaker==='ceo'
+      ? '<span class="spk" style="color:'+ac+'">CEO — the chair</span>'+(s.outcome==='acted'?' <span class="fired">· directive on the record</span>':'')
+      : '<span class="spk" style="color:'+ac+'">'+off.label+'</span> — '+(s.role==='direct'?'directed by the chair':'consulted');
+  $('capLead').innerHTML='TRANSCRIPT&nbsp;&nbsp;'+lead;
+  $('capBody').textContent = s.full;
+}
+
+function go(n){
+  idx=Math.max(0,Math.min(STEPS.length-1,n));
+  $('balloon').classList.remove('show');
+  setTimeout(render, 120);
+}
+function step(dir){ go(idx+dir); if(playing) schedule(); }
+
+function schedule(){
+  clearTimeout(timer);
+  timer=setTimeout(()=>{
+    if(idx>=STEPS.length-1){ stop(); return; }
+    idx++; $('balloon').classList.remove('show'); setTimeout(()=>{render();schedule();},130);
+  }, dwell(STEPS[idx]));
+}
+function play(){ playing=true; $('play').innerHTML='⏸ Pause'; startClock(); render(); schedule(); }
+function stop(){ playing=false; $('play').innerHTML='▶ Convene'; clearTimeout(timer); stopClock(); }
+function toggle(){ playing?stop():play(); }
+
+function startClock(){ stopClock(); clockTimer=setInterval(()=>{clock++;renderClock();},1000); }
+function stopClock(){ clearInterval(clockTimer); }
+function renderClock(){ const m=String(Math.floor(clock/60)).padStart(2,'0'),s=String(clock%60).padStart(2,'0'); $('clock').textContent=m+':'+s; }
+
+function loadSession(name){
+  SESSION=name; STEPS=buildSteps(RECORDINGS[name]||{beats:[]}); idx=0; clock=0; renderClock();
+  document.querySelectorAll('#sessions button').forEach(b=>b.setAttribute('aria-selected', b.dataset.s===name));
+  stop(); render();
+}
+
+// sessions tabs
+const SNAMES={meeting:'🏛 Meeting', debate:'⚖ Debate'};
+const sess=$('sessions');
+Object.keys(SNAMES).forEach((k)=>{
+  if(!RECORDINGS[k] || !(RECORDINGS[k].beats||[]).length) return;
+  const b=document.createElement('button'); b.dataset.s=k; b.textContent=SNAMES[k];
+  b.setAttribute('role','tab'); b.onclick=()=>loadSession(k); sess.appendChild(b);
+});
+
+$('play').onclick=toggle;
+$('next').onclick=()=>step(1);
+$('prev').onclick=()=>step(-1);
+$('speed').oninput=e=>{speed=parseFloat(e.target.value);$('speedv').textContent=speed.toFixed(1)+'×';if(playing)schedule();};
+$('progress').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();go(Math.round((e.clientX-r.left)/r.width*STEPS.length));};
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();toggle();}
+  if(e.code==='ArrowRight')step(1); if(e.code==='ArrowLeft')step(-1);
+});
+
+// boot: prefer debate, else the first available
+loadSession((RECORDINGS.debate&&(RECORDINGS.debate.beats||[]).length)?'debate':'meeting');
+window.addEventListener('resize',()=>render());
+</script>
+</body>
+</html>
