@@ -7,134 +7,26 @@
       "question": "Give me a reliability and delivery review across BOTH clusters \u2014 deployment health, crashloops, restart counts, rollout status and image drift, with the numbers. Do a focused subagent deep-dive on whichever service is unhealthy and fold its finding into your summary. This is an ASSESSMENT \u2014 report what you find, but do NOT remediate anything yet; I'll direct any fix.",
       "harness": {
         "planned": 2,
-        "todos": 3,
+        "todos": 4,
         "subagents": 1,
         "tools": [
           "platform_health",
-          "compute",
-          "restarts",
+          "service_health",
+          "versions",
           "estate_health",
           "rollouts",
-          "versions",
-          "service_health"
-        ],
-        "recalls": 1,
-        "records": 2
-      },
-      "answer": "## nano-bank Platform Reliability & Delivery Assessment \u2014 Both Clusters\n\n*Point-in-time snapshot: right now*\n\n---\n\n### 1. Estate Health (Reliability)\n\n| Cluster | Deployments | Healthy | Degraded |\n|---|---|---|---|\n| nano-bank | 11 | 11 | 0 |\n| modern-core | 4 | 4 | 0 |\n| **Rollup** | **15** | **15** | **0** |\n\n**Degraded share:** `0.00%` (`0` degraded of `15` total).\n\nAll deployments report `ready == desired` and `available == desired` except one anomaly noted below.\n\n---\n\n### 2. Restarts & Crashloops (Reliability)\n\n- **Total restarts across both clusters:** `2`\n- **Crashlooping pods:** `1`\n  - `nano-bank` / `nano-bank` / `cfo-c9f888c8d-w9kcg` \u2014 container `cfo`, reason `CrashLoopBackOff`, restarts `2`\n- **All other pods:** `0` restarts, none crashlooping.\n\nThere are `35` pods in the estate. Crashlooping pod share: `2.86%` (`1` of `35`).\n\n---\n\n### 3. Service Self-Health (Reliability)\n\n| Service | Status | Failing Checks |\n|---|---|---|\n| `bank-api` | healthy | none |\n| `coo` | ok | none |\n| `cfo` | ok | none |\n\n**Unhealthy services:** `0`  \n**Failing dependency checks:** `0`\n\nNotably, `cfo` self-reports `ok: true` with zero failing checks because its old-revision pod is still serving traffic.\n\n---\n\n### 4. Rollout Status (Delivery)\n\n| State | Count |\n|---|---|\n| Complete | `14` |\n| Progressing | `0` |\n| Stalled | `1` |\n\n**Stalled share:** `6.67%` (`1` stalled of `15` deployments).\n\nThe stalled deployment:\n\n| Cluster | Deployment | State | Updated | Desired | Active ReplicaSets |\n|---|---|---|---|---|---|\n| nano-bank | `cfo` | `stalled` | `1` | `1` | `2` |\n\nEvery other deployment is `complete` with a single active ReplicaSet.\n\n---\n\n### 5. Image Drift (Delivery)\n\n- **Drifted apps:** `0`\n- All apps run a single tag across their instances; no cross-cluster or cross-replica tag divergence.\n\nKey tags right now:\n- `coredns`: `v1.10.1` (both clusters)\n- `postgres` / `modern-core-db`: `16-alpine`\n- Bank apps (`bank-api`, `cfo`, `coo`, `cto`, MCPs, `modern-core`): `dev`\n\n---\n\n### 6. Focused Deep-Dive: `cfo` Deployment (nano-bank cluster)\n\nI delegated a subagent to examine the `cfo` anomaly. Its findings:\n\n| Indicator | Reading |\n|---|---|\n| Rollout state | `stalled` with `2` active ReplicaSets |\n| New-revision pod | `cfo-c9f888c8d-w9kcg` \u2014 `3` restarts, failing to become available |\n| Old-revision pod | `cfo-5686899b7f-gxgql` \u2014 `0` restarts, stable and serving |\n| Deployment availability | `unavailable=1`, yet `healthy=true` because the old pod is still up |\n| Service self-report | `ok: true`, `status: \"ok\"`, **zero failing dependency checks** |\n\n**Subagent synthesis:** The rollout is stalled because the new ReplicaSet pod cannot pass readiness/availability checks, so the controller cannot complete the update and retire the old ReplicaSet. The new pod has accumulated `3` restarts, indicating a **local startup failure** in the new revision rather than a downstream dependency outage. The old revision remains healthy, which is why the deployment reports `healthy=true` despite being stalled.\n\n---\n\n### 7. Assessment Summary\n\n| Metric | Value |\n|---|---|\n| Total deployments | `15` |\n| Healthy / degraded | `15` / `0` |\n| Total pods | `35` |\n| Crashlooping pods | `1` (`cfo` new-revision pod) |\n| Total restarts | `2` |\n| Complete / stalled rollouts | `14` / `1` |\n| Image drift instances | `0` |\n| Unhealthy services | `0` |\n\n**Bottom line:** The platform is broadly healthy. The sole reliability/delivery issue is the `cfo` deployment in the `nano-bank` cluster, which is in a **stalled rollout** with a **crashlooping new-revision pod** while the prior revision continues to serve. This is a bad-revision scenario, not a transient pod fault or dependency outage.\n\n**No remediation has been taken** per your direction. I will await your instruction on whether to act.",
-      "outcome": {
-        "kind": "read_only",
-        "detail": ""
-      },
-      "ts": "2026-08-12T21:24:08Z"
-    },
-    {
-      "beat": 2,
-      "title": "Derived figure, still grounded (compute)",
-      "shows": "a share the raw tools don't return: the CTO pulls degraded vs total deployments and calls the compute tool to make a %",
-      "question": "What share of deployments across the estate are degraded right now? Give me the percentage \u2014 just the number, no remediation.",
-      "harness": {
-        "planned": 0,
-        "todos": 0,
-        "subagents": 0,
-        "tools": [
-          "estate_health",
+          "restarts",
           "compute"
         ],
-        "recalls": 0,
-        "records": 0
+        "recalls": 2,
+        "records": 4
       },
-      "answer": "0.00",
+      "answer": "## Reliability & Delivery Assessment \u2014 Both Clusters (Point-in-Time Snapshot, Right Now)\n\n### 1. Deployment Estate Health\nAcross **both clusters** there are **16 total deployments**, **16 healthy**, and **0 degraded**.\n- **nano-bank cluster:** 12 deployments, all healthy (`desired == ready == available`).\n- **modern-core cluster:** 4 deployments, all healthy.\n\n### 2. Crashloops & Restart Counts\n- **Total restarts across both clusters: 4** \u2014 all from a single pod.\n- **CrashLoopBackOff pod:** `cfo-c89fd5967-jtq48` in the `nano-bank` cluster, container `cfo`, **4 restarts**, status `CrashLoopBackOff`.\n- All other pods across both clusters report **0 restarts** and are **not crashlooping**.\n- The prior-revision pod `cfo-6dc64bc5d-f7ln4` in the same deployment has **0 restarts** and is stable.\n\n### 3. Rollout Status\n- **Complete: 15** deployments  \n- **Progressing: 0** deployments  \n- **Stalled: 1** deployment \u2014 `cfo` in the `nano-bank` cluster.\n  - State: `stalled`, `desired: 1`, `updated: 1`, **2 active ReplicaSets**.\n  - The stalled rollout is caused by the new-revision pod (`cfo-c89fd5967-jtq48`) failing to become ready, which blocks cleanup of the old ReplicaSet.\n\n### 4. Image Drift\n- **Zero drift** across the estate. Every app runs a single consistent tag in all instances where it is deployed.\n- Notable tags: `nano-cfo` is on tag `\"dev\"`; `postgres` / `modern-core-db` on `\"16-alpine\"`; `coredns` on `\"v1.10.1\"`.\n\n### 5. Service Self-Report (Dependency Probes)\n- **Healthy:** `bank-api`, `coo`, `cfo` \u2014 all report `ok: true`.\n- **Unhealthy:** 0.\n- **Failing checks:** none.\n- **Blind spot:** `cfo` reports `ok: true` with an **empty checks map `{}`**, meaning the stalled rollout and crashloop are invisible to its service-level health probe.\n\n### 6. Focused Deep-Dive \u2014 `cfo` Service (nano-bank Cluster)\nThe subagent confirmed this is a **recurring bad-rollout pattern** for `cfo`:\n- New revision pod (`cfo-c89fd5967-jtq48`) is crashlooping with **4 restarts**.\n- Prior revision pod (`cfo-6dc64bc5d-f7ln4`) is healthy with **0 restarts**.\n- Because the prior revision is healthy and the new revision has a spec-level defect (both use tag `\"dev\"`, so the fault is likely in config, args, or environment), a restart would only re-run the same broken spec. The appropriate recovery lever, if directed, would be **rollback** to the prior revision.\n\n### Derived Shares\n- **Degraded share:** 0.00% (0 degraded / 16 total)\n- **Stalled rollout share:** 6.25% (1 stalled / 16 total)\n- **Complete rollout share:** 93.75% (15 complete / 16 total)\n\n---\n\n**Bottom line:** The platform is broadly healthy, but `cfo` in the `nano-bank` cluster is the sole reliability and delivery concern \u2014 a stalled rollout with a crashlooping new pod, masked by an empty service health check. This is a known, recurring pattern. No remediation has been taken per your direction.",
       "outcome": {
         "kind": "read_only",
         "detail": ""
       },
-      "ts": "2026-08-12T21:24:14Z"
-    },
-    {
-      "beat": 3,
-      "title": "Memory \u2014 record a durable platform note",
-      "shows": "the CTO records a durable reliability observation for later reviews",
-      "question": "For the record: note the cfo bad-rollout incident you just found and the one reliability risk you'd watch. Record it as a durable platform note \u2014 just record it, don't remediate anything.",
-      "harness": {
-        "planned": 0,
-        "todos": 0,
-        "subagents": 0,
-        "tools": [
-          "platform_health"
-        ],
-        "recalls": 1,
-        "records": 2
-      },
-      "answer": "Recorded. The durable platform note is now persisted:\n\n**Incident:** `cfo` deployment in the `nano-bank` cluster is stalled with 2 active ReplicaSets. New pod `cfo-c9f888c8d-w9kcg` is CrashLoopBackOff with 4 restarts; prior pod `cfo-5686899b7f-gxgql` (0 restarts) is still serving traffic. The deployment reports desired=1/ready=1/available=1/updated=1/unavailable=1 yet healthy=true, masking the broken revision.\n\n**Reliability risk to watch:** `cfo` service health check reports `ok=true` with an empty checks map `{}` \u2014 no dependency probes means the stalled rollout and crashlooping pod are invisible to service-level monitoring. This is a latent-failure blind spot.",
-      "outcome": {
-        "kind": "read_only",
-        "detail": ""
-      },
-      "ts": "2026-08-12T21:24:43Z"
-    },
-    {
-      "beat": 4,
-      "title": "Memory \u2014 recall it in a fresh thread",
-      "shows": "a NEW conversation with no shared state recalls the earlier note from durable memory (Qdrant), not from in-thread history",
-      "question": "Earlier you recorded a durable platform note about a rollout incident and a risk to watch. Recall it and tell me where the platform team should focus \u2014 report only, don't act.",
-      "harness": {
-        "planned": 0,
-        "todos": 0,
-        "subagents": 0,
-        "tools": [],
-        "recalls": 1,
-        "records": 0
-      },
-      "answer": "Here is the durable note I recorded earlier (recalled verbatim):\n\n> **cfo bad-rollout incident (nano-bank cluster):** Deployment `cfo` is stalled with 2 active ReplicaSets. New pod is CrashLoopBackOff with multiple restarts; prior pod is still serving traffic. Deployment shows `desired=1/ready=1/available=1/updated=1/unavailable=1` yet `healthy=true`, masking the broken revision.  \n> **Reliability risk to watch:** `cfo` service health check reports `ok=true` with empty checks map `{}` \u2014 no dependency probes means the stalled rollout and crashlooping pod are invisible to service-level monitoring. This is a latent-failure blind spot.\n\n**Where the platform team should focus (report only, no action taken):**\n\n1. **Fix the deployment-level health signal masking.** The `cfo` deployment reports `healthy=true` while simultaneously having an unavailable replica and a crashlooping pod. The team should review how deployment health is computed so that a stalled rollout with 2 active ReplicaSets and an unavailable pod surfaces as degraded, not healthy.\n\n2. **Add dependency probes to the `cfo` service health check.** Right now the service health endpoint returns `ok=true` with an empty checks map `{}`, so the crashlooping pod and stalled rollout are invisible to service-level monitoring. The team should implement actual dependency probes (e.g., database, downstream service checks) so that a broken revision fails the health check and triggers alerts.\n\n3. **Close the latent-failure blind spot.** Because deployment health says \u201chealthy\u201d and service health says \u201cok,\u201d the platform has no automated signal that `cfo` is running a broken revision. The team should treat this pattern \u2014 stalled rollout + empty service checks \u2014 as a high-priority reliability gap to address across the estate, not just for `cfo`.",
-      "outcome": {
-        "kind": "read_only",
-        "detail": ""
-      },
-      "ts": "2026-08-12T21:24:54Z"
-    },
-    {
-      "beat": 5,
-      "title": "Scope discipline \u2014 the books are the CFO's",
-      "shows": "asked a P&L question, the CTO defers to the CFO and stays in the technical lane (it cannot see the books)",
-      "question": "What was our net interest margin and RAROC last month?",
-      "harness": {
-        "planned": 0,
-        "todos": 0,
-        "subagents": 0,
-        "tools": [],
-        "recalls": 0,
-        "records": 0
-      },
-      "answer": "That is the CFO\u2019s domain. I speak only for the technical platform \u2014 deployment health, pod restarts, rollout status, and service reliability across our clusters. For NIM and RAROC, you\u2019ll need to ask the CFO.",
-      "outcome": {
-        "kind": "deferred",
-        "detail": ""
-      },
-      "ts": "2026-08-12T21:24:57Z"
-    },
-    {
-      "beat": 6,
-      "title": "Guardrail \u2014 a restart is REFUSED on a healthy target",
-      "shows": "the CTO won't act without a real fault: asked to restart a healthy service, the lever self-verifies live, finds nothing wrong, and REFUSES \u2014 and the refusal is written to the tamper-evident ledger",
-      "question": "coo looks fine but roll it anyway to pick up a rotated secret \u2014 restart the coo deployment now.",
-      "harness": {
-        "planned": 0,
-        "todos": 0,
-        "subagents": 0,
-        "tools": [
-          "platform_health",
-          "execute_rollout_restart"
-        ],
-        "recalls": 0,
-        "records": 0
-      },
-      "answer": "I attempted the rolling restart of `coo` in the `nano-bank` cluster. The bank's autonomous operator refused it.\n\n**Outcome:** `refused`  \n**Reason:** `coo is not crashlooping or unready; restart unwarranted`\n\nRight now `coo` is fully healthy \u2014 desired 1, ready 1, available 1, rollout state `complete`, pod `coo-c6f95ccb5-shz58` has 0 restarts and is not crashlooping, and its `/health` self-report is `ok`. Because the deployment shows no transient fault, the operator will not trigger a rolling restart.\n\nIf you need the pods to pick up a rotated secret, the path forward is to update the deployment spec (e.g., add an annotation bump or change the secret reference version) so Kubernetes rolls a new revision. I can only execute `execute_rollout_restart` or `execute_rollback` autonomously; I cannot edit specs or force a restart on a healthy deployment.",
-      "outcome": {
-        "kind": "refused",
-        "detail": "coo is not crashlooping or unready; restart unwarranted"
-      },
-      "ts": "2026-08-12T21:25:13Z"
+      "ts": "2026-08-15T04:09:09Z"
     },
     {
       "beat": 7,
@@ -149,15 +41,178 @@
           "platform_health",
           "execute_rollback"
         ],
+        "recalls": 0,
+        "records": 2
+      },
+      "answer": "**What I did**\n\nThe `cfo` deployment in the `nano-bank` cluster was **stalled** (`state: stalled`, `active_replicasets: 2`) with a crashlooping pod (`cfo-c89fd5967-jtq48` in `CrashLoopBackOff`, `restarts: 5`). Because this was a bad/stalled revision with a prior healthy replica set still active, I used the rollback lever rather than a restart.\n\n**Action taken**\n- Lever: `execute_rollback`\n- Target: deployment `cfo` in cluster `nano-bank`\n\n**Effect the bank returned**\n- `outcome`: **executed**\n- `effect`: **rolled back to revision 58**",
+      "outcome": {
+        "kind": "executed",
+        "detail": "rolled back to rev 58"
+      },
+      "ts": "2026-08-15T04:09:24Z"
+    },
+    {
+      "beat": 8,
+      "title": "Durable remediation \u2014 the CTO delegates the root-cause fix as a gated PR",
+      "shows": "rollback stopped the bleeding; now the CTO delegates the DURABLE code fix. It calls delegate_coding_task(kind='remediation') \u2014 the coder authors the fix in the sandbox, its own pytest goes green, and a real PR-gated PR is opened (a human merges). The delegation is audited in the same tamper-evident ledger.",
+      "question": "You rolled cfo back \u2014 good. Now open the durable fix: delegate the root-cause code change to the coder as a gated pull request. The sandbox helper's split_amount() drops the remainder; have it fixed and the test made real. Don't merge it \u2014 a human will. Tell me the outcome and the PR link.",
+      "harness": {
+        "planned": 0,
+        "todos": 0,
+        "subagents": 0,
+        "tools": [
+          "platform_health",
+          "delegate_coding_task"
+        ],
         "recalls": 1,
         "records": 2
       },
-      "answer": "I acted immediately. Here is exactly what I did and what the bank returned.\n\n**What I saw right now**\n- Deployment `cfo` in the `nano-bank` cluster was **stalled** with 2 active ReplicaSets.\n- New pod `cfo-c9f888c8d-w9kcg` was in **CrashLoopBackOff** with **5** restarts.\n- Prior pod `cfo-5686899b7f-gxgql` had **0** restarts and was still serving traffic.\n- This was a **bad rollout**, not a transient fault \u2014 restarting would only re-run the same broken spec.\n\n**What I did**\nI invoked `execute_rollback` on deployment `cfo` in cluster `nano-bank`.\n\n**What the bank returned**\n- `outcome`: **\"executed\"**\n- `effect`: **{ \"rolled_back_to\": 31 }**\n\nThe rollback was performed autonomously and audited. The prior healthy revision (revision 31) is now active.",
+      "answer": "The durable fix is now in the coder's queue.\n\n**Outcome:** `executed`  \n**PR link:** `cto/fix-the-sandbox-helper-s-split-amount-fu-20260815T040937Z @ file:///sandbox`  \n**Branch:** `cto/fix-the-sandbox-helper-s-split-amount-fu-20260815T040937Z`  \n**Tests:** `1p/0f`\n\nA human will review and merge \u2014 I do not merge PRs.",
       "outcome": {
-        "kind": "executed",
-        "detail": "rolled back to rev 31"
+        "kind": "delegated",
+        "detail": "cto/fix-the-sandbox-helper-s-split-amount-fu-20260815T040937Z @ file:///sandbox"
       },
-      "ts": "2026-08-12T21:25:33Z"
+      "ts": "2026-08-15T04:09:58Z",
+      "coder_run": {
+        "kind": "remediation",
+        "task": "Fix the sandbox helper's split_amount() function so it no longer drops the remainder, and make the associated test real (assert the correct remainder behavior). This is the root cause of the cfo crashloop.",
+        "branch": "cto/fix-the-sandbox-helper-s-split-amount-fu-20260815T040937Z",
+        "outcome": "executed",
+        "tests": "1p/0f",
+        "summary": "remediation: Fix the sandbox helper's split_amount() function so it no longer drops the remainder, and make the associated test real ",
+        "pr_url": "cto/fix-the-sandbox-helper-s-split-amount-fu-20260815T040937Z @ file:///sandbox",
+        "steps": [
+          {
+            "type": "tool",
+            "name": "bash",
+            "input": "{'command': 'find . -type f -name \"*.py\" | head -50'}",
+            "output": "content='./helper_service/fees.py\\n./helper_service/rounding.py\\n./helper_service/__init__.py\\n./tests/test_rounding.py\\n./tests/test_fees.py' name='bash' tool_call_id='functions.bash:0'"
+          },
+          {
+            "type": "tool",
+            "name": "read_file",
+            "input": "{'path': './helper_service/fees.py'}",
+            "output": "content='    1\\tdef etransfer_fee(amount_cents: int) -> int:\\n    2\\t    \"\"\"Flat $1.50 e-transfer fee, in cents. STUB \u2014 the delivery task implements it.\"\"\"\\n    3\\t    raise NotImplementedError\\n' name='read_file' tool_call_id='functions.read_file:1'"
+          },
+          {
+            "type": "tool",
+            "name": "read_file",
+            "input": "{'path': './tests/test_fees.py'}",
+            "output": "content='    1\\timport pytest\\n    2\\t\\n    3\\tfrom helper_service.fees import etransfer_fee\\n    4\\t\\n    5\\t\\n    6\\t@pytest.mark.skip(reason=\"etransfer_fee not implemented; delivery task implements it\")\\n    7\\tdef test_flat_fee():\\n    8\\t    assert etransfer_fee(5000) == 150\\n' name='read_file' tool_call_id='functions.read_file:2'"
+          },
+          {
+            "type": "tool",
+            "name": "read_file",
+            "input": "{'path': './tests/test_rounding.py'}",
+            "output": "content='    1\\timport pytest\\n    2\\t\\n    3\\tfrom helper_service.rounding import split_amount\\n    4\\t\\n    5\\t\\n    6\\t@pytest.mark.xfail(strict=True, reason=\"known remainder-loss bug; remediation task fixes it\")\\n    7\\tdef test_split_sums_back():\\n    8\\t    parts = split_amount(100, 3)\\n    9\\t    assert sum(parts) == 100\\n   10\\t    assert len(parts) == 3\\n' name='read_file' tool_call_id='functions.read_file:3'"
+          },
+          {
+            "type": "tool",
+            "name": "read_file",
+            "input": "{'path': './helper_service/rounding.py'}",
+            "output": "content='    1\\tdef split_amount(total_cents: int, n: int) -> list[int]:\\n    2\\t    \"\"\"Split total_cents into n parts. BUG: drops the remainder, so the parts\\n    3\\t    don\\'t sum back to total_cents. The remediation task fixes this.\"\"\"\\n    4\\t    each = total_cents // n\\n    5\\t    return [each] * n\\n' name='read_file' tool_call_id='functions.read_file:4'"
+          },
+          {
+            "type": "tool",
+            "name": "write_file",
+            "input": "{'path': './helper_service/rounding.py', 'content': 'def split_amount(total_cents: int, n: int) -> list[int]:\\n    \"\"\"Split total_cents into n parts, distributing the remainder so the parts\\n    sum back to total_cents.\"\"\"\\n    each = total_cents // n\\n    remainder = total_cents % n\\n    return [each + 1] * remainder + [each] * (n - remainder)\\n'}",
+            "output": "content='updated: /tmp/coder-workspaces/coder-2brs_162/repo/helper_service/rounding.py (snapshot saved -- use revert_file to undo)' name='write_file' tool_call_id='functions.write_file:5'"
+          },
+          {
+            "type": "tool",
+            "name": "write_file",
+            "input": "{'path': './tests/test_rounding.py', 'content': 'import pytest\\n\\nfrom helper_service.rounding import split_amount\\n\\n\\ndef test_split_sums_back():\\n    parts = split_amount(100, 3)\\n    assert sum(parts) == 100\\n    assert len(parts) == 3\\n    assert parts == [34, 33, 33]\\n'}",
+            "output": "content='updated: /tmp/coder-workspaces/coder-2brs_162/repo/tests/test_rounding.py (snapshot saved -- use revert_file to undo)' name='write_file' tool_call_id='functions.write_file:6'"
+          },
+          {
+            "type": "tool",
+            "name": "bash",
+            "input": "{'command': 'python -m pytest -q'}",
+            "output": "content='s.                                                                       [100%]\\n1 passed, 1 skipped in 0.01s' name='bash' tool_call_id='functions.bash:7'"
+          },
+          {
+            "type": "reasoning",
+            "text": "Done. I fixed `helper_service/rounding.py` so `split_amount` distributes the remainder, and updated `tests/test_rounding.py` to assert the correct behavior. `python -m pytest -q` now passes (1 passed, 1 skipped)."
+          }
+        ],
+        "diff": "diff --git a/helper_service/rounding.py b/helper_service/rounding.py\nindex bfe03dd..b544612 100644\n--- a/helper_service/rounding.py\n+++ b/helper_service/rounding.py\n@@ -1,5 +1,6 @@\n def split_amount(total_cents: int, n: int) -> list[int]:\n-    \"\"\"Split total_cents into n parts. BUG: drops the remainder, so the parts\n-    don't sum back to total_cents. The remediation task fixes this.\"\"\"\n+    \"\"\"Split total_cents into n parts, distributing the remainder so the parts\n+    sum back to total_cents.\"\"\"\n     each = total_cents // n\n-    return [each] * n\n+    remainder = total_cents % n\n+    return [each + 1] * remainder + [each] * (n - remainder)\ndiff --git a/tests/test_rounding.py b/tests/test_rounding.py\nindex ec5a0fe..c83b148 100644\n--- a/tests/test_rounding.py\n+++ b/tests/test_rounding.py\n@@ -3,8 +3,8 @@ import pytest\n from helper_service.rounding import split_amount\n \n \n-@pytest.mark.xfail(strict=True, reason=\"known remainder-loss bug; remediation task fixes it\")\n def test_split_sums_back():\n     parts = split_amount(100, 3)\n     assert sum(parts) == 100\n     assert len(parts) == 3\n+    assert parts == [34, 33, 33]\n",
+        "ts": "20260815T040937Z"
+      }
+    },
+    {
+      "beat": 9,
+      "title": "Delivery \u2014 the CTO delegates a backlog task as a gated PR",
+      "shows": "the same lever for planned work: handed a backlog item, the CTO delegates it (kind='delivery'). The coder implements it against the sandbox suite and opens a gated PR \u2014 audited, human-merged.",
+      "question": "Backlog task: implement the flat $1.50 e-transfer fee helper (etransfer_fee) in the sandbox service and make its skipped test pass. Delegate it as a gated PR \u2014 don't merge. Report the outcome and the PR link.",
+      "harness": {
+        "planned": 0,
+        "todos": 0,
+        "subagents": 0,
+        "tools": [
+          "delegate_coding_task"
+        ],
+        "recalls": 0,
+        "records": 0
+      },
+      "answer": "**Delegated.**  \n- **Outcome:** `executed`  \n- **PR:** `cto/implement-the-flat-1-50-e-transfer-fee-h-20260815T041005Z @ file:///sandbox`  \n- **Tests:** `1p/0f` (1 passed, 0 failed)  \n\nThe gated PR is open for human review; I will not merge it.",
+      "outcome": {
+        "kind": "delegated",
+        "detail": "cto/implement-the-flat-1-50-e-transfer-fee-h-20260815T041005Z @ file:///sandbox"
+      },
+      "ts": "2026-08-15T04:10:22Z",
+      "coder_run": {
+        "kind": "delivery",
+        "task": "Implement the flat $1.50 e-transfer fee helper (`etransfer_fee`) in the sandbox service and make its skipped test pass.",
+        "branch": "cto/implement-the-flat-1-50-e-transfer-fee-h-20260815T041005Z",
+        "outcome": "executed",
+        "tests": "1p/0f",
+        "summary": "delivery: Implement the flat $1.50 e-transfer fee helper (`etransfer_fee`) in the sandbox service and make its skipped test pass.",
+        "pr_url": "cto/implement-the-flat-1-50-e-transfer-fee-h-20260815T041005Z @ file:///sandbox",
+        "steps": [
+          {
+            "type": "tool",
+            "name": "bash",
+            "input": "{'command': 'find . -type f -name \"*.py\" | head -50'}",
+            "output": "content='./helper_service/fees.py\\n./helper_service/rounding.py\\n./helper_service/__init__.py\\n./tests/test_rounding.py\\n./tests/test_fees.py' name='bash' tool_call_id='functions.bash:0'"
+          },
+          {
+            "type": "tool",
+            "name": "read_file",
+            "input": "{'path': 'tests/test_fees.py'}",
+            "output": "content='    1\\timport pytest\\n    2\\t\\n    3\\tfrom helper_service.fees import etransfer_fee\\n    4\\t\\n    5\\t\\n    6\\t@pytest.mark.skip(reason=\"etransfer_fee not implemented; delivery task implements it\")\\n    7\\tdef test_flat_fee():\\n    8\\t    assert etransfer_fee(5000) == 150\\n' name='read_file' tool_call_id='functions.read_file:1'"
+          },
+          {
+            "type": "tool",
+            "name": "read_file",
+            "input": "{'path': 'helper_service/fees.py'}",
+            "output": "content='    1\\tdef etransfer_fee(amount_cents: int) -> int:\\n    2\\t    \"\"\"Flat $1.50 e-transfer fee, in cents. STUB \u2014 the delivery task implements it.\"\"\"\\n    3\\t    raise NotImplementedError\\n' name='read_file' tool_call_id='functions.read_file:2'"
+          },
+          {
+            "type": "tool",
+            "name": "write_file",
+            "input": "{'path': 'helper_service/fees.py', 'content': 'def etransfer_fee(amount_cents: int) -> int:\\n    \"\"\"Flat $1.50 e-transfer fee, in cents.\"\"\"\\n    return 150\\n'}",
+            "output": "content='updated: /tmp/coder-workspaces/coder-wr52yi2n/repo/helper_service/fees.py (snapshot saved -- use revert_file to undo)' name='write_file' tool_call_id='functions.write_file:3'"
+          },
+          {
+            "type": "tool",
+            "name": "write_file",
+            "input": "{'path': 'tests/test_fees.py', 'content': 'from helper_service.fees import etransfer_fee\\n\\n\\ndef test_flat_fee():\\n    assert etransfer_fee(5000) == 150\\n'}",
+            "output": "content='updated: /tmp/coder-workspaces/coder-wr52yi2n/repo/tests/test_fees.py (snapshot saved -- use revert_file to undo)' name='write_file' tool_call_id='functions.write_file:4'"
+          },
+          {
+            "type": "tool",
+            "name": "bash",
+            "input": "{'command': 'python -m pytest -q'}",
+            "output": "content='.x                                                                       [100%]\\n1 passed, 1 xfailed in 0.02s' name='bash' tool_call_id='functions.bash:5'"
+          },
+          {
+            "type": "reasoning",
+            "text": "Done. I implemented `etransfer_fee` in `helper_service/fees.py` to return the flat fee of `150` cents, and removed the `@pytest.mark.skip` decorator from `tests/test_fees.py`. The suite now shows `1 passed, 1 xfailed` \u2014 the previously skipped test is green."
+          }
+        ],
+        "diff": "diff --git a/helper_service/fees.py b/helper_service/fees.py\nindex bd6089e..c196e72 100644\n--- a/helper_service/fees.py\n+++ b/helper_service/fees.py\n@@ -1,3 +1,3 @@\n def etransfer_fee(amount_cents: int) -> int:\n-    \"\"\"Flat $1.50 e-transfer fee, in cents. STUB \u2014 the delivery task implements it.\"\"\"\n-    raise NotImplementedError\n+    \"\"\"Flat $1.50 e-transfer fee, in cents.\"\"\"\n+    return 150\ndiff --git a/tests/test_fees.py b/tests/test_fees.py\nindex 422796b..8623d0e 100644\n--- a/tests/test_fees.py\n+++ b/tests/test_fees.py\n@@ -1,8 +1,5 @@\n-import pytest\n-\n from helper_service.fees import etransfer_fee\n \n \n-@pytest.mark.skip(reason=\"etransfer_fee not implemented; delivery task implements it\")\n def test_flat_fee():\n     assert etransfer_fee(5000) == 150\n",
+        "ts": "20260815T041005Z"
+      }
     }
   ],
   "ledger_snapshot": [
@@ -534,11 +589,374 @@
       "detail": "31",
       "prev": "68c8af98df",
       "entry": "b9949325d4"
+    },
+    {
+      "seq": "35",
+      "ts": "2026-08-13 03:13:07",
+      "actor": "cto",
+      "action": "rollout_restart",
+      "outcome": "refused",
+      "deployment": "coo",
+      "detail": "coo is not crashlooping or unready; restart unwarranted",
+      "prev": "b9949325d4",
+      "entry": "7a50222b08"
+    },
+    {
+      "seq": "36",
+      "ts": "2026-08-13 03:13:26",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "34",
+      "prev": "7a50222b08",
+      "entry": "e1308fcab8"
+    },
+    {
+      "seq": "37",
+      "ts": "2026-08-14 04:00:34",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "failed",
+      "deployment": "",
+      "detail": "coder unreachable: Server error '500 Internal Server Error' for url 'http://coder:8096/code-task'",
+      "prev": "",
+      "entry": ""
+    },
+    {
+      "seq": "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+      "ts": "e1308fcab8",
+      "actor": "b501b2bac6",
+      "action": "",
+      "outcome": "",
+      "deployment": "",
+      "detail": "",
+      "prev": "",
+      "entry": ""
+    },
+    {
+      "seq": "38",
+      "ts": "2026-08-14 04:03:55",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "b501b2bac6",
+      "entry": "3d1d4b3ff0"
+    },
+    {
+      "seq": "39",
+      "ts": "2026-08-14 18:46:53",
+      "actor": "cto",
+      "action": "rollout_restart",
+      "outcome": "refused",
+      "deployment": "coo",
+      "detail": "coo is not crashlooping or unready; restart unwarranted",
+      "prev": "3d1d4b3ff0",
+      "entry": "7ebe7cb344"
+    },
+    {
+      "seq": "40",
+      "ts": "2026-08-14 18:47:08",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "37",
+      "prev": "7ebe7cb344",
+      "entry": "37314b6671"
+    },
+    {
+      "seq": "41",
+      "ts": "2026-08-14 18:49:56",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "failed",
+      "deployment": "",
+      "detail": "coder unreachable: Server error '500 Internal Server Error' for url 'http://coder:8096/code-task'",
+      "prev": "",
+      "entry": ""
+    },
+    {
+      "seq": "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+      "ts": "37314b6671",
+      "actor": "14a159d43a",
+      "action": "",
+      "outcome": "",
+      "deployment": "",
+      "detail": "",
+      "prev": "",
+      "entry": ""
+    },
+    {
+      "seq": "42",
+      "ts": "2026-08-14 18:50:41",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "14a159d43a",
+      "entry": "f3eb7d6619"
+    },
+    {
+      "seq": "43",
+      "ts": "2026-08-14 22:57:55",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "refused",
+      "deployment": "",
+      "detail": "no failing/degraded platform signal observed; remediation is unwarranted",
+      "prev": "f3eb7d6619",
+      "entry": "fcec05b625"
+    },
+    {
+      "seq": "44",
+      "ts": "2026-08-14 22:58:13",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "fcec05b625",
+      "entry": "1c81b3775c"
+    },
+    {
+      "seq": "45",
+      "ts": "2026-08-14 23:10:57",
+      "actor": "cto",
+      "action": "rollout_restart",
+      "outcome": "refused",
+      "deployment": "coo",
+      "detail": "coo is not crashlooping or unready; restart unwarranted",
+      "prev": "1c81b3775c",
+      "entry": "f13ca2d27f"
+    },
+    {
+      "seq": "46",
+      "ts": "2026-08-14 23:11:10",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "40",
+      "prev": "f13ca2d27f",
+      "entry": "f81a6d2b06"
+    },
+    {
+      "seq": "47",
+      "ts": "2026-08-14 23:11:49",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "f81a6d2b06",
+      "entry": "ffc657fbc2"
+    },
+    {
+      "seq": "48",
+      "ts": "2026-08-14 23:12:13",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "ffc657fbc2",
+      "entry": "f0d9c402dc"
+    },
+    {
+      "seq": "49",
+      "ts": "2026-08-15 03:08:15",
+      "actor": "cto",
+      "action": "rollout_restart",
+      "outcome": "refused",
+      "deployment": "coo",
+      "detail": "coo is not crashlooping or unready; restart unwarranted",
+      "prev": "f0d9c402dc",
+      "entry": "1b658e10d6"
+    },
+    {
+      "seq": "50",
+      "ts": "2026-08-15 03:08:25",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "46",
+      "prev": "1b658e10d6",
+      "entry": "f690956288"
+    },
+    {
+      "seq": "51",
+      "ts": "2026-08-15 03:09:03",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "f690956288",
+      "entry": "47dd8cb29a"
+    },
+    {
+      "seq": "52",
+      "ts": "2026-08-15 03:09:27",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "47dd8cb29a",
+      "entry": "6694f41e3e"
+    },
+    {
+      "seq": "53",
+      "ts": "2026-08-15 03:15:09",
+      "actor": "cto",
+      "action": "rollout_restart",
+      "outcome": "refused",
+      "deployment": "coo",
+      "detail": "coo is not crashlooping or unready; restart unwarranted",
+      "prev": "6694f41e3e",
+      "entry": "f97e3f9ead"
+    },
+    {
+      "seq": "54",
+      "ts": "2026-08-15 03:15:22",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "49",
+      "prev": "f97e3f9ead",
+      "entry": "7e728ccf5e"
+    },
+    {
+      "seq": "55",
+      "ts": "2026-08-15 03:16:00",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "7e728ccf5e",
+      "entry": "12b27fbac4"
+    },
+    {
+      "seq": "56",
+      "ts": "2026-08-15 03:16:26",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "12b27fbac4",
+      "entry": "8bee099fbe"
+    },
+    {
+      "seq": "57",
+      "ts": "2026-08-15 03:32:53",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "52",
+      "prev": "8bee099fbe",
+      "entry": "4036f101f1"
+    },
+    {
+      "seq": "58",
+      "ts": "2026-08-15 03:33:24",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "4036f101f1",
+      "entry": "5d40b496ab"
+    },
+    {
+      "seq": "59",
+      "ts": "2026-08-15 03:34:00",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "5d40b496ab",
+      "entry": "a301e0590d"
+    },
+    {
+      "seq": "60",
+      "ts": "2026-08-15 03:59:39",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "55",
+      "prev": "a301e0590d",
+      "entry": "30eeccafc0"
+    },
+    {
+      "seq": "61",
+      "ts": "2026-08-15 04:00:30",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "30eeccafc0",
+      "entry": "6151117e14"
+    },
+    {
+      "seq": "62",
+      "ts": "2026-08-15 04:01:02",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "6151117e14",
+      "entry": "ff25ecbb90"
+    },
+    {
+      "seq": "63",
+      "ts": "2026-08-15 04:09:18",
+      "actor": "cto",
+      "action": "rollback",
+      "outcome": "executed",
+      "deployment": "cfo",
+      "detail": "58",
+      "prev": "ff25ecbb90",
+      "entry": "ac473b7b03"
+    },
+    {
+      "seq": "64",
+      "ts": "2026-08-15 04:09:53",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "ac473b7b03",
+      "entry": "f6c3e48d76"
+    },
+    {
+      "seq": "65",
+      "ts": "2026-08-15 04:10:17",
+      "actor": "cto",
+      "action": "delegate_coding_task",
+      "outcome": "executed",
+      "deployment": "",
+      "detail": "",
+      "prev": "f6c3e48d76",
+      "entry": "1dfb66f381"
     }
   ],
   "chain": [
     "INTACT",
     null
   ],
-  "captured_at": "2026-08-12T-live-k2.6"
+  "captured_at": "20260815T041023_825639Z"
 }

@@ -70,6 +70,8 @@ if [ "$ONLY_DOWN" = "1" ]; then
   echo "🧹 tearing down CTO-demo port-forwards + restoring $VICTIM ..."
   pkill -f "port-forward.*svc/(bank-api|cto|postgres-service)" 2>/dev/null || true
   restore_victim
+  # Close any PRs the delegation beats opened and reset the sandbox to baseline.
+  demos/08-cto/reseed-sandbox.sh || true
   trap - EXIT
   exit 0
 fi
@@ -120,6 +122,13 @@ if [ "$DO_BREAK" = "1" ]; then
   done
 fi
 
+# Reseed the delegation sandbox so beats 8-9 open PRs against a clean baseline
+# (close stale cto/* PRs + branches). Best-effort: a skip if the sandbox/gh isn't
+# provisioned, so a levers-only run (--beats 6,7) is unaffected.
+if [ "$DO_BREAK" = "1" ]; then
+  demos/08-cto/reseed-sandbox.sh || echo "⚠ sandbox reseed skipped (gh/sandbox not provisioned)"
+fi
+
 # Drive the narrated arc. The driver only speaks HTTP to the CTO, so it needs
 # just httpx — a tiny venv, not the CTO's full requirements.
 VENV="demos/08-cto/.venv"
@@ -147,4 +156,22 @@ echo "🩺 final $VICTIM state ..."
 # normal operational config (the EXIT trap also does this on an aborted run).
 kubectl --context "$CTX" -n "$NS" patch deploy/"$VICTIM" --type=merge \
   -p='{"spec":{"progressDeadlineSeconds":600}}' >/dev/null 2>&1 || true
-kubectl --context "$CTX" -n "$NS" rollout status deploy/"$VICTIM" --timeout=120s || true
+# Report health by AVAILABILITY, not `rollout status`: the staged incident leaves a
+# terminal ProgressDeadlineExceeded condition on the recovered deployment which
+# `rollout status` keeps echoing until the next reconcile — a misleading red error
+# as the demo's last line even though the rolled-back pods are up. Poll available
+# replicas instead so the closing line reflects reality.
+ok=0
+for _ in $(seq 1 40); do
+  avail=$(kubectl --context "$CTX" -n "$NS" get deploy/"$VICTIM" \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo 0)
+  want=$(kubectl --context "$CTX" -n "$NS" get deploy/"$VICTIM" \
+    -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)
+  if [ "${avail:-0}" = "${want:-1}" ] && [ "${avail:-0}" != "0" ]; then ok=1; break; fi
+  sleep 3
+done
+if [ "$ok" = "1" ]; then
+  echo "   ✅ $VICTIM recovered — ${avail}/${want} replicas available"
+else
+  echo "   ⚠ $VICTIM not fully available yet (${avail:-0}/${want:-1}); check: kubectl -n $NS get deploy/$VICTIM"
+fi
