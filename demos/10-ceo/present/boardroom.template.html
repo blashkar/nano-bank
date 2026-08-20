@@ -244,6 +244,9 @@ const SEAT_POS = { // % on the stage, for the balloon anchor + spotlight beam
 
 // ---- markdown-ish -> readable plain text ----
 function unesc(s){ return (s||'').replace(/\\r\\n|\\n/g,'\n').replace(/\\t/g,' ').replace(/\\"/g,'"'); }
+// a degenerate "I'm done" acknowledgment with no real content — not a real speaking turn
+const JUNK_RE = /^\s*\(?\s*(analysis complete|all steps done|end of (the )?report|no answer)\b/i;
+function isJunk(t){ const s=(t||'').trim(); return s.length<40 || JUNK_RE.test(s); }
 function clean(md){
   return unesc(md)
     .replace(/`{1,3}/g,'').replace(/\*\*/g,'').replace(/[*_]/g,'')
@@ -269,7 +272,7 @@ function buildSteps(rec){
     const beatMeta={beat:b.beat, title:b.title, question:b.question, shows:b.shows};
     for(const c of (b.contributions||[])){
       const full=clean(c.text), g=gist(c.text);
-      if(!full || !g) continue;              // skip empty captures — only real speech balloons
+      if(!full || !g || isJunk(full)) continue;   // skip empty/degenerate captures
       steps.push({...beatMeta, speaker:c.officer, role:c.role, full, raw:c.text, gist:g, acted:c.acted});
     }
     // the chair speaks last each beat — a longer gist (the ruling/synthesis carries weight)
