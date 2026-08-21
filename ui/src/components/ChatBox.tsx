@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, Send, User, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   sendAgentMessageAction,
   confirmAgentActionAction,
@@ -15,6 +17,56 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   pendingAction?: PendingAction;
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  p: ({ children }) => <p className="leading-relaxed">{children}</p>,
+  strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-nanobank-blue-sky underline underline-offset-2 hover:text-white"
+    >
+      {children}
+    </a>
+  ),
+  ul: ({ children }) => <ul className="list-disc pl-4 space-y-0.5">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal pl-4 space-y-0.5">{children}</ol>,
+  li: ({ children }) => <li className="leading-snug">{children}</li>,
+  h1: ({ children }) => <h4 className="text-sm font-semibold text-white">{children}</h4>,
+  h2: ({ children }) => <h4 className="text-sm font-semibold text-white">{children}</h4>,
+  h3: ({ children }) => <h4 className="text-sm font-semibold text-white">{children}</h4>,
+  blockquote: ({ children }) => (
+    <blockquote className="border-l-2 border-white/20 pl-2 italic text-slate-400">{children}</blockquote>
+  ),
+  code: ({ children }) => (
+    <code className="rounded bg-slate-950/60 px-1 py-0.5 font-mono text-xs text-nanobank-blue-sky">{children}</code>
+  ),
+  pre: ({ children }) => (
+    <pre className="overflow-x-auto rounded-lg bg-slate-950/60 p-2 font-mono text-xs">{children}</pre>
+  ),
+  table: ({ children }) => (
+    <div className="overflow-x-auto">
+      <table className="border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-white/10 px-2 py-1 text-left font-semibold text-white">{children}</th>
+  ),
+  td: ({ children }) => <td className="border border-white/10 px-2 py-1">{children}</td>,
+};
+
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <div className="space-y-2 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 export default function ChatBox() {
@@ -105,13 +157,17 @@ export default function ChatBox() {
                   </div>
                 )}
                 <div
-                  className={`max-w-[75%] rounded-xl px-3.5 py-2 text-sm whitespace-pre-wrap ${
+                  className={`max-w-[75%] rounded-xl px-3.5 py-2 text-sm ${
                     message.role === "user"
-                      ? "bg-gradient-to-r from-nanobank-blue-sky to-nanobank-blue-green text-nanobank-blue-deep font-medium"
+                      ? "bg-gradient-to-r from-nanobank-blue-sky to-nanobank-blue-green text-nanobank-blue-deep font-medium whitespace-pre-wrap"
                       : "bg-slate-900/50 border border-white/5 text-slate-200"
                   }`}
                 >
-                  {message.content}
+                  {message.role === "assistant" ? (
+                    <MarkdownMessage content={message.content} />
+                  ) : (
+                    message.content
+                  )}
                 </div>
                 {message.role === "user" && (
                   <div className="p-1.5 rounded-full bg-slate-800 text-slate-400 flex-shrink-0">
