@@ -2,7 +2,7 @@ import { requireSession } from "@/lib/session";
 import { Metadata } from 'next';
 import { PiggyBank, Wallet, AlertCircle, Plus, ArrowLeftRight, ArrowDownToLine } from "lucide-react";
 import { API_BASE_URL } from "@/lib/config";
-import { Account } from "@/lib/accounts";
+import { Account, getBalanceOverrides, applyBalanceOverrides } from "@/lib/accounts";
 import BackLink from "@/components/BackLink";
 import GlassCard from "@/components/GlassCard";
 import GradientHeading from "@/components/GradientHeading";
@@ -24,7 +24,9 @@ export default async function AccountsPage() {
             cache: "no-store",
         });
         if (response.ok) {
-            accounts = await response.json();
+            const rawAccounts = await response.json();
+            const overrides = await getBalanceOverrides();
+            accounts = applyBalanceOverrides(rawAccounts, overrides);
         } else {
             console.error(`Failed to fetch accounts: ${response.status}`);
             fetchError = true;

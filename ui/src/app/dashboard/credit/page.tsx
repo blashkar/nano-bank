@@ -1,8 +1,8 @@
 import { requireSession } from "@/lib/session";
 import { Metadata } from 'next';
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, CreditCard } from "lucide-react";
 import { API_BASE_URL } from "@/lib/config";
-import { Account } from "@/lib/accounts";
+import { Account, getBalanceOverrides, applyBalanceOverrides } from "@/lib/accounts";
 import BackLink from "@/components/BackLink";
 import GlassCard from "@/components/GlassCard";
 import GradientHeading from "@/components/GradientHeading";
@@ -39,6 +39,8 @@ export default async function CreditCardsPage() {
         (a) => a.account_type === "credit_card"
     );
 
+    const overrides = await getBalanceOverrides();
+
     // Fetch complete details for each credit card to obtain credit limit and available balance
     let creditCardsDetails: Account[] = [];
     if (!fetchError && creditCardAccounts.length > 0) {
@@ -55,7 +57,8 @@ export default async function CreditCardsPage() {
                     return null;
                 })
             );
-            creditCardsDetails = details.filter((card): card is Account => card !== null);
+            const rawDetails = details.filter((card): card is Account => card !== null);
+            creditCardsDetails = applyBalanceOverrides(rawDetails, overrides);
         } catch (error) {
             console.error("Failed to fetch card details:", error);
             fetchError = true;
@@ -90,6 +93,17 @@ export default async function CreditCardsPage() {
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 border-b border-white/10 pb-6">
                         <div>
                             <GradientHeading>Credit Cards</GradientHeading>
+                            {creditCardsDetails.length > 0 && (
+                                <div className="mt-4">
+                                    <Link 
+                                        href="/dashboard/credit/payment"
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 transition-all text-xs font-semibold cursor-pointer"
+                                    >
+                                        <CreditCard className="w-3.5 h-3.5" />
+                                        Make Payment
+                                    </Link>
+                                </div>
+                            )}
                         </div>
                         <div className="text-right">
                             <span className="text-slate-400 text-xs font-semibold uppercase tracking-wider">
