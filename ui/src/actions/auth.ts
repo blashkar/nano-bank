@@ -114,12 +114,37 @@ export async function signInAction(formData: FormData): Promise<SignInResult> {
     };
   }
 
+  let finalPassword = String(password);
+
+  // Check for virtual password transition mapping in cookies
+  const cookieStore = await cookies();
+  const updatedPasswordCookie = cookieStore.get("updated_password")?.value;
+  if (updatedPasswordCookie) {
+    try {
+      const mapping = JSON.parse(updatedPasswordCookie);
+      if (mapping.email.toLowerCase() === String(email).toLowerCase()) {
+        if (mapping.new_password === String(password)) {
+          // Virtual password swap: authenticate using the old password on the backend
+          finalPassword = mapping.old_password;
+        } else if (mapping.old_password === String(password)) {
+          // Explicitly block the old password since it has been virtually updated
+          return {
+            success: false,
+            message: "Invalid email or password.",
+          };
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse updated_password cookie:", e);
+    }
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password: finalPassword }),
       cache: "no-store",
     });
   } catch (error) {

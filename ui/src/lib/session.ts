@@ -6,6 +6,9 @@ export interface CustomerProfile {
   first_name: string;
   last_name: string;
   email: string;
+  phone_number?: string;
+  date_of_birth?: string;
+  sin?: string | null;
 }
 
 export interface Session {
@@ -68,5 +71,16 @@ export async function requireSession(): Promise<Session> {
     redirect("/api/auth/refresh?next=/dashboard");
   }
 
-  return { accessToken: accessToken!, profile: verification.profile };
+  let profile = verification.profile;
+  const updatedProfileCookie = cookieStore.get("updated_profile")?.value;
+  if (updatedProfileCookie) {
+    try {
+      const overrides = JSON.parse(updatedProfileCookie);
+      profile = { ...profile, ...overrides };
+    } catch (e) {
+      console.error("Failed to parse updated_profile cookie:", e);
+    }
+  }
+
+  return { accessToken: accessToken!, profile };
 }
