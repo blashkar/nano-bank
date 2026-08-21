@@ -2,7 +2,7 @@ import { requireSession } from "@/lib/session";
 import { Metadata } from 'next';
 import { ArrowLeftRight, ArrowDownToLine, AlertCircle } from "lucide-react";
 import { API_BASE_URL } from "@/lib/config";
-import { Account } from "@/lib/accounts";
+import { Account, getBalanceOverrides, applyBalanceOverridesSingle } from "@/lib/accounts";
 import { TransactionResponse, TransactionHistoryResponse } from "@/lib/transactions";
 import BackLink from "@/components/BackLink";
 import GlassCard from "@/components/GlassCard";
@@ -71,7 +71,9 @@ export default async function AccountDetailsPage({ params }: Props) {
             cache: "no-store",
         });
         if (response.ok) {
-            account = await response.json();
+            const rawAccount = await response.json();
+            const overrides = await getBalanceOverrides();
+            account = applyBalanceOverridesSingle(rawAccount, overrides);
         } else {
             console.error(`Failed to fetch account: ${response.status}`);
             accountError = true;
