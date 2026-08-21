@@ -8,6 +8,7 @@ import { Account } from "@/lib/accounts";
 import { LoanSummary } from "@/lib/loans";
 import GlassCard from "@/components/GlassCard";
 import GradientHeading from "@/components/GradientHeading";
+import ChatBox from "@/components/ChatBox";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -88,9 +89,8 @@ export default async function Page() {
         <main className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 px-6 py-12">
             {/* Welcome Card */}
             <GlassCard className="max-w-3xl">
-                <div className="mb-8">
-                    <GradientHeading>Welcome back, {profile.first_name}</GradientHeading>
-                    <p className="text-slate-400 text-sm mt-2">{profile.email}</p>
+                <div className="">
+                    <GradientHeading>Welcome back, {profile.first_name}</GradientHeading>                    
                     {tokenExpiry !== null && (
                         <p className="text-xs mt-2">
                             <TokenCountdown expiresAt={tokenExpiry} />
@@ -98,9 +98,6 @@ export default async function Page() {
                     )}
                 </div>
 
-                <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/30 p-8 text-center text-sm text-slate-400">
-                    Your account summaries will show below.
-                </div>
             </GlassCard>
 
             {/* Accounts Dashboard Snapshot Card */}
@@ -187,6 +184,11 @@ export default async function Page() {
                         </Link>
                     </div>
                 )}
+            </GlassCard>
+
+            {/* AI Assistant */}
+            <GlassCard className="max-w-3xl">
+                <ChatBox />
             </GlassCard>
         </main>
     );
