@@ -69,7 +69,9 @@ function unwrapMcp(result: unknown): Record<string, unknown> | unknown {
   return result;
 }
 
-async function requireCustomerId(): Promise<{ customerId: string } | { error: AgentChatResult }> {
+async function requireCustomerId(): Promise<
+  { customerId: string; accessToken: string } | { error: AgentChatResult }
+> {
   if (!AGENT_SERVICE_TOKEN) {
     return { error: { success: false, reply: "The assistant isn't connected yet — missing AGENT_SERVICE_TOKEN." } };
   }
@@ -85,7 +87,7 @@ async function requireCustomerId(): Promise<{ customerId: string } | { error: Ag
     return { error: { success: false, reply: "Unable to verify your session. Please sign in again." } };
   }
 
-  return { customerId };
+  return { customerId, accessToken };
 }
 
 export async function sendAgentMessageAction(message: string, threadId?: string): Promise<AgentChatResult> {
@@ -103,6 +105,7 @@ export async function sendAgentMessageAction(message: string, threadId?: string)
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${AGENT_SERVICE_TOKEN}`,
+        "X-Nano-Customer-Token": resolved.accessToken,
       },
       body: JSON.stringify({ message, thread_id: threadId }),
       cache: "no-store",
@@ -146,7 +149,10 @@ async function respondToAction(actionId: string, verb: "confirm" | "cancel"): Pr
       `${AGENT_API_URL}/branch/clients/${resolved.customerId}/actions/${actionId}/${verb}`,
       {
         method: "POST",
-        headers: { Authorization: `Bearer ${AGENT_SERVICE_TOKEN}` },
+        headers: {
+          Authorization: `Bearer ${AGENT_SERVICE_TOKEN}`,
+          "X-Nano-Customer-Token": resolved.accessToken,
+        },
         cache: "no-store",
         signal: AbortSignal.timeout(30_000),
       }
