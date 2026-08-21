@@ -112,8 +112,101 @@ async fn get_profile(
     Ok(Json(customer.into()))
 }
 
-async fn update_profile() -> &'static str {
-    "Update profile endpoint - TODO: implement"
+#[derive(Debug, serde::Deserialize, Validate)]
+pub struct UpdateProfileRequest {
+    #[validate(length(min = 1, max = 100))]
+    pub first_name: String,
+
+    #[validate(length(min = 1, max = 100))]
+    pub last_name: String,
+
+    #[validate(email)]
+    pub email: String,
+
+    #[validate(length(min = 10, max = 20))]
+    pub phone_number: String,
+
+    pub date_of_birth: chrono::NaiveDate,
+
+    #[validate(length(equal = 9))]
+    pub sin: Option<String>,
+
+    pub new_password: Option<String>,
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Json(payload): Json<UpdateProfileRequest>,
+) -> Result<Json<CustomerResponse>, AppError> {
+    payload.validate()?;
+
+    let mut tx = state.pool.begin().await?;
+
+    // Perform database UPDATE on customers table
+    let customer = sqlx::query_as::<_, Customer>(
+        r#"
+        UPDATE customers
+        SET first_name = $1, last_name = $2, email = $3, phone_number = $4, date_of_birth = $5, sin = $6, updated_at = CURRENT_TIMESTAMP
+        WHERE customer_id = $7
+        RETURNING
+            customer_id, email, phone_number, first_name, last_name,
+            date_of_birth, sin, kyc_status, kyc_completed_at, created_at, updated_at
+        "#
+    )
+    .bind(&payload.first_name)
+    .bind(&payload.last_name)
+    .bind(&payload.email)
+    .bind(&payload.phone_number)
+    .bind(payload.date_of_birth)
+    .bind(payload.sin.as_deref())
+    .bind(auth.customer_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) => match db.code().as_deref() {
+            // Unique violation: duplicate email or phone number
+            Some("23505") => AppError::Conflict(
+                "A customer with this email or phone number already exists".to_string(),
+            ),
+            // Check violation
+            Some("23514") => {
+                AppError::BadRequest(format!("Customer data rejected: {}", db.message()))
+            }
+            _ => AppError::Database(e),
+        },
+        _ => AppError::Database(e),
+    })?;
+
+    // Perform database UPDATE on customer_credentials table if new password is provided
+    if let Some(ref new_pwd) = payload.new_password {
+        if new_pwd.len() < 8 {
+            return Err(AppError::BadRequest("New password must be at least 8 characters".to_string()));
+        }
+        let password_hash = crate::utils::password::hash_password(new_pwd)?;
+
+        sqlx::query(
+            r#"
+            UPDATE customer_credentials
+            SET password_hash = $1, password_changed_at = CURRENT_TIMESTAMP
+            WHERE customer_id = $2
+            "#
+        )
+        .bind(&password_hash)
+        .bind(auth.customer_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    tracing::info!(
+        customer_id = %customer.customer_id,
+        email = %customer.email,
+        "✅ customer profile and credentials updated persistently"
+    );
+
+    Ok(Json(customer.into()))
 }
 
 async fn upload_kyc_document() -> &'static str {

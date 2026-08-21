@@ -16,17 +16,6 @@ export default async function Header() {
         if (verification.status === "valid") {
             profile = verification.profile;
         }
-
-        // Intercept and merge updated profile cookie if present
-        const updatedProfileCookie = cookieStore.get("updated_profile")?.value;
-        if (updatedProfileCookie) {
-            try {
-                const overrides = JSON.parse(updatedProfileCookie);
-                profile = profile ? { ...profile, ...overrides } : overrides;
-            } catch (e) {
-                console.error("Failed to parse updated_profile cookie:", e);
-            }
-        }
     }
 
     return (

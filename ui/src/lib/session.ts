@@ -71,16 +71,5 @@ export async function requireSession(): Promise<Session> {
     redirect("/api/auth/refresh?next=/dashboard");
   }
 
-  let profile = verification.profile;
-  const updatedProfileCookie = cookieStore.get("updated_profile")?.value;
-  if (updatedProfileCookie) {
-    try {
-      const overrides = JSON.parse(updatedProfileCookie);
-      profile = { ...profile, ...overrides };
-    } catch (e) {
-      console.error("Failed to parse updated_profile cookie:", e);
-    }
-  }
-
-  return { accessToken: accessToken!, profile };
+  return { accessToken: accessToken!, profile: verification.profile };
 }

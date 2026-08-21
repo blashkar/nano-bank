@@ -1,6 +1,5 @@
 "use server";
 
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/session";
 import { API_BASE_URL } from "@/lib/config";
@@ -33,7 +32,7 @@ export async function updateSettingsAction(formData: FormData): Promise<UpdateSe
       return { success: false, message: "Required fields cannot be empty." };
     }
 
-    // Password validation
+    // Password validation & verification
     if (newPassword || confirmPassword || currentPassword) {
       if (!currentPassword) {
         return { success: false, message: "Current password is required to change settings." };
@@ -62,48 +61,51 @@ export async function updateSettingsAction(formData: FormData): Promise<UpdateSe
         if (!authResponse.ok) {
           return { success: false, message: "The current password you entered is incorrect." };
         }
-
-        // Write password overrides to support virtual logins using new passwords
-        if (newPassword) {
-          const cookieStore = await cookies();
-          const pwdMapping = {
-            email: session.profile.email,
-            old_password: String(currentPassword),
-            new_password: String(newPassword),
-          };
-          cookieStore.set("updated_password", JSON.stringify(pwdMapping), {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "lax",
-            path: "/",
-            maxAge: 60 * 60 * 24 * 30, // 30 days
-          });
-        }
       } catch (err) {
         console.error("Password verification failed:", err);
         return { success: false, message: "Failed to verify current password. Please try again." };
       }
     }
 
-    // Store profile overrides in the cookie (valid for 30 days)
-    const cookieStore = await cookies();
-    const updatedProfile = {
+    const payload = {
       first_name: String(firstName),
       last_name: String(lastName),
       email: String(email),
       phone_number: String(phoneNumber),
-      date_of_birth: dateOfBirth ? String(dateOfBirth) : undefined,
-      sin: sin ? String(sin) : undefined,
+      date_of_birth: String(dateOfBirth),
+      sin: sin && String(sin).trim() ? String(sin).trim() : null,
+      new_password: newPassword ? String(newPassword) : null,
     };
 
-    cookieStore.set("updated_profile", JSON.stringify(updatedProfile), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE_URL}/api/v1/customers/profile`, {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${session.accessToken}`,
+        },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      });
+    } catch (err) {
+      console.error("PUT profile request failed:", err);
+      return { success: false, message: "Unable to reach the server. Please try again." };
+    }
 
+    if (!response.ok) {
+      let message = "Failed to update profile settings.";
+      try {
+        const errorBody = await response.json();
+        const { friendlyErrorMessage } = await import("@/lib/errors");
+        message = friendlyErrorMessage(errorBody, message);
+      } catch (e) {
+        console.error("Failed to parse PUT profile error response:", e);
+      }
+      return { success: false, message };
+    }
+
+    revalidatePath("/", "layout");
     revalidatePath("/dashboard");
     revalidatePath("/dashboard/settings");
 
