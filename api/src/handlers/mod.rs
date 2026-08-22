@@ -17,6 +17,7 @@ pub mod health;
 pub mod interac;
 pub mod interac_payees;
 pub mod ledger;
+pub mod loans;
 pub mod lynx;
 pub mod mandates;
 pub mod ops_levers;
