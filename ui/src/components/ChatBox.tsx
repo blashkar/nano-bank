@@ -129,7 +129,7 @@ export default function ChatBox() {
   };
 
   return (
-    <div className="flex flex-col h-[420px]">
+    <div className="flex flex-col h-[600px]">
       <div className="flex items-center gap-3 pb-4 mb-4 border-b border-white/5">
         <div className="p-2 rounded-lg bg-nanobank-blue-sky/10 text-nanobank-blue-sky">
           <Bot className="w-5 h-5" />
