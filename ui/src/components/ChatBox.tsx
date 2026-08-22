@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bot, Send, User, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -70,6 +71,7 @@ function MarkdownMessage({ content }: { content: string }) {
 }
 
 export default function ChatBox() {
+  const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -120,7 +122,13 @@ export default function ChatBox() {
     try {
       const result = verb === "confirm" ? await confirmAgentActionAction(actionId) : await cancelAgentActionAction(actionId);
       addAssistantMessage(result.reply);
-      if (!result.success) toast.error(result.reply);
+      if (!result.success) {
+        toast.error(result.reply);
+      } else if (verb === "confirm") {
+        // The confirmed action may have moved money — refresh so the account
+        // summary card (a Server Component) re-fetches current balances.
+        router.refresh();
+      }
     } catch (error) {
       console.error(`Agent action ${verb} failed:`, error);
       toast.error(`Unable to ${verb} that action. Please try again.`);

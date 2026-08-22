@@ -1,6 +1,7 @@
 "use server";
 
 import { cookies } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { API_BASE_URL, AGENT_API_URL, AGENT_SERVICE_TOKEN } from "@/lib/config";
 
 export interface PendingAction {
@@ -170,6 +171,14 @@ async function respondToAction(actionId: string, verb: "confirm" | "cancel"): Pr
   const result = unwrapMcp(await response.json().catch(() => ({})));
   if (result && typeof result === "object" && "error" in result) {
     return { success: false, reply: `Couldn't ${verb} that: ${(result as { error: string }).error}` };
+  }
+
+  // A confirmed action may have moved money (transfer, e-transfer send) —
+  // revalidate so the account summary/list pick up the new balances next
+  // time they're rendered.
+  if (verb === "confirm") {
+    revalidatePath("/dashboard");
+    revalidatePath("/dashboard/accounts");
   }
 
   return {
