@@ -30,6 +30,7 @@ export default async function Page() {
             headers: { Authorization: `Bearer ${accessToken}` },
             cache: "no-store",
         }),
+
         fetch(`${API_BASE_URL}/api/v1/loans`, {
             headers: { Authorization: `Bearer ${accessToken}` },
             cache: "no-store",

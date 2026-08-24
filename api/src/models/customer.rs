@@ -183,3 +183,39 @@ impl From<Customer> for CustomerResponse {
         }
     }
 }
+
+/// Like [`CustomerResponse`] but for the customer's own profile view/edit flow
+/// (`GET`/`PUT /customers/profile`), which — unlike signup's response — must
+/// echo back `date_of_birth`/`sin` so the Settings form can prefill them.
+/// Without this, an unrelated field edit (e.g. phone number) would resubmit a
+/// blank SIN/DOB and silently overwrite the customer's real KYC data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomerProfileResponse {
+    pub customer_id: Uuid,
+    pub email: String,
+    pub phone_number: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub date_of_birth: NaiveDate,
+    pub sin: Option<String>,
+    pub kyc_status: KycStatus,
+    pub kyc_completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<Customer> for CustomerProfileResponse {
+    fn from(customer: Customer) -> Self {
+        Self {
+            customer_id: customer.customer_id,
+            email: customer.email,
+            phone_number: customer.phone_number,
+            first_name: customer.first_name,
+            last_name: customer.last_name,
+            date_of_birth: customer.date_of_birth,
+            sin: customer.sin,
+            kyc_status: customer.kyc_status,
+            kyc_completed_at: customer.kyc_completed_at,
+            created_at: customer.created_at,
+        }
+    }
+}

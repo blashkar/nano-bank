@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { logoutAction } from "../actions/auth";
+import { verifySession, type CustomerProfile } from "@/lib/session";
+import ProfileDropdown from "./ProfileDropdown";
 
 export default async function Header() {
     const cookieStore = await cookies();
@@ -8,8 +9,17 @@ export default async function Header() {
     // short-lived and can be absent between refreshes while the session is live.
     const isAuthenticated = Boolean(cookieStore.get("refresh_token")?.value);
 
+    let profile: CustomerProfile | null = null;
+    if (isAuthenticated) {
+        const accessToken = cookieStore.get("access_token")?.value;
+        const verification = await verifySession(accessToken);
+        if (verification.status === "valid") {
+            profile = verification.profile;
+        }
+    }
+
     return (
-        <header className="relative z-10 w-full max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
+        <header className="relative z-50 w-full max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
             <Link href="/" className="flex items-center gap-2 group">
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-nanobank-blue-green to-nanobank-blue-sky flex items-center justify-center font-bold text-nanobank-blue-deep shadow-md transform group-hover:scale-105 transition-transform">
                     N
@@ -27,14 +37,7 @@ export default async function Header() {
                     >
                         Dashboard
                     </Link>
-                    <form action={logoutAction}>
-                        <button
-                            type="submit"
-                            className="text-sm font-medium text-nanobank-blue-sky hover:text-white transition-colors duration-200"
-                        >
-                            Log out
-                        </button>
-                    </form>
+                    <ProfileDropdown profile={profile} />
                 </div>
             ) : (
                 <Link

@@ -1172,7 +1172,7 @@ fn push_filters(
 // ---------------------------------------------------------------------------
 
 /// Reject credit-card accounts (they use the card rails) and non-active status.
-fn ensure_operable(account: &Account) -> Result<(), AppError> {
+pub(crate) fn ensure_operable(account: &Account) -> Result<(), AppError> {
     if matches!(
         account.account_type,
         AccountType::CreditCard | AccountType::Loan
@@ -1378,9 +1378,9 @@ pub(crate) async fn recompute_available(
 /// A customer account's per-day transaction limit counters + limits, after
 /// resetting any that have rolled over (day / month / year).
 #[derive(sqlx::FromRow)]
-struct LimitState {
-    daily_withdrawal_limit: Decimal,
-    daily_withdrawal_used: Decimal,
+pub(crate) struct LimitState {
+    pub(crate) daily_withdrawal_limit: Decimal,
+    pub(crate) daily_withdrawal_used: Decimal,
     daily_transfer_limit: Decimal,
     daily_transfer_used: Decimal,
     monthly_transfer_limit: Decimal,
@@ -1391,7 +1391,7 @@ struct LimitState {
 
 /// Ensure a limits row exists (table defaults) and roll over stale counters,
 /// returning the current limits/usage. Uses the row lock held on the account.
-async fn ensure_and_reset_limits(
+pub(crate) async fn ensure_and_reset_limits(
     tx: &mut Tx<'_>,
     account_id: Uuid,
 ) -> Result<LimitState, sqlx::Error> {
