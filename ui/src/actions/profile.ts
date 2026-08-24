@@ -74,6 +74,7 @@ export async function updateSettingsAction(formData: FormData): Promise<UpdateSe
       phone_number: String(phoneNumber),
       date_of_birth: String(dateOfBirth),
       sin: sin && String(sin).trim() ? String(sin).trim() : null,
+      current_password: currentPassword ? String(currentPassword) : null,
       new_password: newPassword ? String(newPassword) : null,
     };
 

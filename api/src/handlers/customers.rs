@@ -131,6 +131,8 @@ pub struct UpdateProfileRequest {
     #[validate(length(equal = 9))]
     pub sin: Option<String>,
 
+    pub current_password: Option<String>,
+
     pub new_password: Option<String>,
 }
 
@@ -183,7 +185,29 @@ async fn update_profile(
         if new_pwd.len() < 8 {
             return Err(AppError::BadRequest("New password must be at least 8 characters".to_string()));
         }
-        let password_hash = crate::utils::password::hash_password(new_pwd)?;
+
+        let current_pwd = payload.current_password.as_deref().ok_or_else(|| {
+            AppError::BadRequest("Current password is required to change password".to_string())
+        })?;
+
+        // Retrieve existing password hash from customer_credentials
+        let password_hash: String = sqlx::query_scalar(
+            "SELECT password_hash FROM customer_credentials WHERE customer_id = $1"
+        )
+        .bind(auth.customer_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => AppError::NotFound("Customer credentials not found".to_string()),
+            e => AppError::Database(e),
+        })?;
+
+        // Verify current password against stored hash on the server side
+        if !crate::utils::password::verify_password(current_pwd, &password_hash)? {
+            return Err(AppError::Authentication("The current password you entered is incorrect".to_string()));
+        }
+
+        let new_password_hash = crate::utils::password::hash_password(new_pwd)?;
 
         sqlx::query(
             r#"
@@ -192,7 +216,7 @@ async fn update_profile(
             WHERE customer_id = $2
             "#
         )
-        .bind(&password_hash)
+        .bind(&new_password_hash)
         .bind(auth.customer_id)
         .execute(&mut *tx)
         .await?;
