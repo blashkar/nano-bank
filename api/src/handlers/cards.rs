@@ -176,10 +176,10 @@ async fn pay_credit_card(
         return Err(AppError::BadRequest("To account must be a credit card".to_string()));
     }
 
-    // Ensure status is active
-    if !matches!(from.status, crate::models::account::AccountStatus::Active) {
-        return Err(AppError::AccountFrozen);
-    }
+    // Ensure status is active. `ensure_operable` distinguishes Frozen from
+    // other invalid statuses (e.g. closed/pending) instead of collapsing
+    // everything into AccountFrozen.
+    crate::handlers::transactions::ensure_operable(from)?;
     if !matches!(to.status, crate::models::account::AccountStatus::Active) {
         return Err(AppError::BadRequest("Credit card is not active".to_string()));
     }
@@ -187,6 +187,14 @@ async fn pay_credit_card(
     // Validate sufficient funds
     if from.available_balance < amount {
         return Err(AppError::InsufficientFunds);
+    }
+
+    // Daily withdrawal limit — a card payment draws down the funding account
+    // just like a withdrawal, so it must respect the same cap.
+    let limits = crate::handlers::transactions::ensure_and_reset_limits(&mut tx, from.account_id)
+        .await?;
+    if limits.daily_withdrawal_used + amount > limits.daily_withdrawal_limit {
+        return Err(AppError::TransactionLimitExceeded);
     }
 
     // Record the transaction
@@ -213,6 +221,13 @@ async fn pay_credit_card(
         .await
         .map_err(AppError::Database)?;
 
+    // The `from` leg is a debit on a deposit account: floor its available
+    // balance to 0 first so the mid-INSERT balance trigger doesn't trip
+    // `chk_available_balance_logical` (see transactions::set_available_zero).
+    // The card leg never needs this — debiting it only ever raises its
+    // available credit.
+    crate::handlers::transactions::set_available_zero(&mut tx, from.account_id).await?;
+
     sqlx::query(
         r#"
         INSERT INTO transaction_entries
@@ -232,8 +247,42 @@ async fn pay_credit_card(
     .execute(&mut *tx)
     .await?;
 
+    crate::handlers::transactions::recompute_available(&mut tx, from.account_id).await?;
+
     // Recompute the credit card's available credit (limit - balance)
     recompute_card_available(&mut tx, to.account_id).await?;
+
+    sqlx::query(
+        "UPDATE account_limits SET daily_withdrawal_used = daily_withdrawal_used + $2, \
+         updated_at = CURRENT_TIMESTAMP WHERE account_id = $1",
+    )
+    .bind(from.account_id)
+    .bind(amount)
+    .execute(&mut *tx)
+    .await?;
+
+    // Post the aggregate GL effect through the ledger port, before commit, so
+    // a core failure fails the payment rather than letting the GL drift (same
+    // discipline as capture/settle above): customer deposit liability down
+    // (Payable), card receivable down (CardReceivable) — mirrors loan
+    // repayment's Payable/Receivable pattern.
+    let gl = post_gl_entry(
+        &state,
+        &reference,
+        &req.description,
+        GlAccount::Payable,
+        GlAccount::CardReceivable,
+        amount,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .bind(format!("{}:{}", gl.backend, gl.id))
+    .execute(&mut *tx)
+    .await?;
 
     tx.commit().await?;
 

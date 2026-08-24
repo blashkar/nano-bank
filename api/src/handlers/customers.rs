@@ -10,7 +10,9 @@ use validator::Validate;
 use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::middleware::auth::AuthenticatedCustomer;
-use crate::models::customer::{CreateCustomerRequest, Customer, CustomerResponse};
+use crate::models::customer::{
+    CreateCustomerRequest, Customer, CustomerProfileResponse, CustomerResponse,
+};
 
 pub fn customer_routes() -> Router<AppState> {
     Router::new()
@@ -95,7 +97,7 @@ async fn create_customer(
 async fn get_profile(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
-) -> Result<Json<CustomerResponse>, AppError> {
+) -> Result<Json<CustomerProfileResponse>, AppError> {
     let customer = sqlx::query_as::<_, Customer>(
         "SELECT customer_id, email, phone_number, first_name, last_name,
                 date_of_birth, sin, kyc_status, kyc_completed_at, created_at, updated_at
@@ -140,7 +142,7 @@ async fn update_profile(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
     Json(payload): Json<UpdateProfileRequest>,
-) -> Result<Json<CustomerResponse>, AppError> {
+) -> Result<Json<CustomerProfileResponse>, AppError> {
     payload.validate()?;
 
     let mut new_password_hash = None;
