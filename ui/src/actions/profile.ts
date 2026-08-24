@@ -32,7 +32,7 @@ export async function updateSettingsAction(formData: FormData): Promise<UpdateSe
       return { success: false, message: "Required fields cannot be empty." };
     }
 
-    // Password validation & verification
+    // Password validation
     if (newPassword || confirmPassword || currentPassword) {
       if (!currentPassword) {
         return { success: false, message: "Current password is required to change settings." };
@@ -47,23 +47,6 @@ export async function updateSettingsAction(formData: FormData): Promise<UpdateSe
         if (String(newPassword) === String(currentPassword)) {
           return { success: false, message: "New password cannot be the same as your current password." };
         }
-      }
-
-      // Verify current password against actual backend credentials by dry-running a sign-in check
-      try {
-        const authResponse = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ email: session.profile.email, password: String(currentPassword) }),
-          cache: "no-store",
-        });
-
-        if (!authResponse.ok) {
-          return { success: false, message: "The current password you entered is incorrect." };
-        }
-      } catch (err) {
-        console.error("Password verification failed:", err);
-        return { success: false, message: "Failed to verify current password. Please try again." };
       }
     }
 
