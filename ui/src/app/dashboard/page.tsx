@@ -4,7 +4,7 @@ import { requireSession } from "@/lib/session";
 import { Metadata } from 'next';
 import { CreditCard, PiggyBank, AlertCircle, Landmark } from "lucide-react";
 import { API_BASE_URL } from "@/lib/config";
-import { Account, getBalanceOverrides, applyBalanceOverrides } from "@/lib/accounts";
+import { Account } from "@/lib/accounts";
 import { LoanSummary } from "@/lib/loans";
 import GlassCard from "@/components/GlassCard";
 import GradientHeading from "@/components/GradientHeading";
@@ -38,9 +38,7 @@ export default async function Page() {
     ]);
 
     if (accResult.status === "fulfilled" && accResult.value.ok) {
-        const rawAccounts = await accResult.value.json();
-        const overrides = await getBalanceOverrides();
-        accounts = applyBalanceOverrides(rawAccounts, overrides);
+        accounts = await accResult.value.json();
     } else {
         const detail = accResult.status === "fulfilled" ? accResult.value.status : accResult.reason;
         console.error(`Failed to fetch accounts: ${detail}`);

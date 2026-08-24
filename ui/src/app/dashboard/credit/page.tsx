@@ -2,7 +2,7 @@ import { requireSession } from "@/lib/session";
 import { Metadata } from 'next';
 import { AlertCircle, CreditCard } from "lucide-react";
 import { API_BASE_URL } from "@/lib/config";
-import { Account, getBalanceOverrides, applyBalanceOverrides } from "@/lib/accounts";
+import { Account } from "@/lib/accounts";
 import BackLink from "@/components/BackLink";
 import GlassCard from "@/components/GlassCard";
 import GradientHeading from "@/components/GradientHeading";
@@ -39,8 +39,6 @@ export default async function CreditCardsPage() {
         (a) => a.account_type === "credit_card"
     );
 
-    const overrides = await getBalanceOverrides();
-
     // Fetch complete details for each credit card to obtain credit limit and available balance
     let creditCardsDetails: Account[] = [];
     if (!fetchError && creditCardAccounts.length > 0) {
@@ -57,8 +55,7 @@ export default async function CreditCardsPage() {
                     return null;
                 })
             );
-            const rawDetails = details.filter((card): card is Account => card !== null);
-            creditCardsDetails = applyBalanceOverrides(rawDetails, overrides);
+            creditCardsDetails = details.filter((card): card is Account => card !== null);
         } catch (error) {
             console.error("Failed to fetch card details:", error);
             fetchError = true;
