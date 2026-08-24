@@ -4,12 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { User, Settings, LogOut } from "lucide-react";
 import { logoutAction } from "@/actions/auth";
-
-interface CustomerProfile {
-  first_name: string;
-  last_name: string;
-  email: string;
-}
+import type { CustomerProfile } from "@/lib/session";
 
 interface ProfileDropdownProps {
   profile: CustomerProfile | null;
