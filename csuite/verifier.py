@@ -209,7 +209,14 @@ def revise_prompt(figures: list[str], claims: list[str] = ()) -> str:
         "reproduce the whole report, every section and figure, as a single "
         "self-contained reply. Do NOT send only the changed lines, a diff, or a "
         "note about what you fixed; the reader sees only this message, not your "
-        "previous one, so it must stand completely on its own.")
+        "previous one, so it must stand completely on its own. Specifically: do "
+        "NOT open with a 'Correction:' / 'Note:' / meta-preamble calling out that "
+        "you are revising — the reader never saw the flawed draft, so there is "
+        "nothing to visibly correct. Instead weave the attribution into the "
+        "relevant sentence itself where the figure naturally appears (e.g. "
+        "'the CXO cited 53.1%; my own tools cannot verify customer-adoption "
+        "figures' as part of that section), exactly as if you were writing this "
+        "answer for the first time, correctly, from scratch.")
     return " ".join(parts)
 
 

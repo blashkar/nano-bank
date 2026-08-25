@@ -32,9 +32,19 @@ _TOPIC = ("Pressing decision: should we ship a LIMITED PILOT of recurring "
 
 BEATS = [
     {
-        "title": "Table the motion — the CXO makes the case",
-        "shows": "the CEO tables a pressing decision and asks the proponent to open",
-        "message": _TOPIC + "Open the debate: consult ONLY the CXO right now (do not "
+        "title": "The CEO tables the motion",
+        "shows": "the CEO opens the debate and frames the question, before anyone else speaks",
+        "message": _TOPIC + "Table this motion to open the debate. Do NOT consult any "
+                   "officer yet — that starts next turn. Right now just state the motion "
+                   "in your own words and name the order you will hear positions in: "
+                   "CXO (demand) -> CTO (capacity) -> CFO (cost) -> COO (operational "
+                   "load) -> your ruling.",
+        "thread": "debate",
+    },
+    {
+        "title": "The CXO makes the case",
+        "shows": "the CEO calls on the proponent to open",
+        "message": "Open the debate: consult ONLY the CXO right now (do not "
                    "consult anyone else this turn) for the customer case — how strong "
                    "is demand for recurring e-Transfers, and what CX signal backs it "
                    "(issues, NPS/CSAT, the feature-request theme)? Relay the CXO's "
