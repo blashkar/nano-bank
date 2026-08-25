@@ -18,7 +18,9 @@ async def post_ask(base_url: str, message: str, client=None) -> dict:
         r = await client.post(url, json={"message": message})
     else:
         import httpx
-        async with httpx.AsyncClient(timeout=600) as c:
+        # 1200s: a consult can chain into a coder delegation (delegate_coding_task
+        # has its own ~900s budget), so the relay needs headroom above that.
+        async with httpx.AsyncClient(timeout=1200) as c:
             r = await c.post(url, json={"message": message})
     r.raise_for_status()
     return r.json()
