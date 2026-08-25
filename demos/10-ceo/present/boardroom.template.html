@@ -405,7 +405,7 @@ function loadSession(name){
 }
 
 // sessions tabs
-const SNAMES={meeting:'🏛 Meeting', debate:'⚖ Debate'};
+const SNAMES={meeting:'🏛 Meeting', debate:'⚖ Debate', build:'🛠 Build'};
 const sess=$('sessions');
 Object.keys(SNAMES).forEach((k)=>{
   if(!RECORDINGS[k] || !(RECORDINGS[k].beats||[]).length) return;

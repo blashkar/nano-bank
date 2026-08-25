@@ -30,7 +30,8 @@ sys.path.insert(0, HERE)
 import state  # noqa: E402  (read_jsonl / save_recording)
 
 DRIVER = {"meeting": ("demos/10-ceo/drive.py", 6),
-          "debate":  ("demos/10-ceo/debate.py", 5)}
+          "debate":  ("demos/10-ceo/debate.py", 5),
+          "build":   ("demos/10-ceo/build.py", 2)}
 CEO_URL = os.environ.get("CEO_API_URL", "http://localhost:8099")
 
 _LOCK = threading.Lock()

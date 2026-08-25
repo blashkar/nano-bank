@@ -40,7 +40,7 @@ def _load(name: str) -> dict:
 def build() -> str:
     with open(TEMPLATE, encoding="utf-8") as f:
         html = f.read()
-    data = {"meeting": _load("meeting"), "debate": _load("debate")}
+    data = {"meeting": _load("meeting"), "debate": _load("debate"), "build": _load("build")}
     payload = json.dumps(data, ensure_ascii=False)
     # inline: replace the marker (which precedes the default {} literal) AND the
     # default literal that follows it, so `const RECORDINGS = <payload>;`.
