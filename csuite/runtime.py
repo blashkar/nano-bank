@@ -62,11 +62,14 @@ def _empty(answer: str) -> bool:
     a = (answer or "").strip()
     if not a or a == _NO_ANSWER:
         return True
-    if len(a) < 80 or bool(_JUNK_RE.match(a)):
+    if _JUNK_RE.match(a):
         return True
-    # A genuine grounded report cites figures; a longer text with zero digits
-    # in it (e.g. "the analysis is complete, I can spawn a subagent to dig
-    # deeper if you'd like") is a wrap-up offer, not a real finding.
+    # A genuine grounded report cites figures; a short-to-medium text with zero
+    # digits in it (e.g. "the analysis is complete, I can spawn a subagent to
+    # dig deeper if you'd like") is a wrap-up offer, not a real finding. A
+    # short answer that DOES carry a figure (e.g. "NIM is 3.1%.") is left
+    # alone — that is a real, if terse, claim for the grounding/claims checks
+    # downstream to judge on its own terms.
     return len(a) < 600 and not re.search(r"\d", a)
 
 
