@@ -168,6 +168,49 @@ pub trait Ledger: Send + Sync {
     async fn balances(&self) -> Result<Vec<AccountBalance>, LedgerError>;
 }
 
+/// Idempotent boot-time bootstrap: if the bank has never been capitalized (no
+/// nonzero `Capital` balance yet), post a balanced founding journal entry
+/// (debit `Bank`, credit `Capital`) for `amount` — so a fresh boot starts as a
+/// properly capitalized bank instead of a hollow shell running purely on
+/// customer liabilities (that gap is what made every leverage/RWA-capital
+/// ratio the CFO reports read as ~0.1% instead of a real bank's ~10%+).
+/// Safe to call on every boot: once `Capital` is nonzero — from this bootstrap
+/// or a later real capital event — it is left alone. Returns whether it
+/// actually seeded, for startup logging.
+pub async fn ensure_seed_capital(
+    ledger: &dyn Ledger,
+    amount: Decimal,
+) -> Result<bool, LedgerError> {
+    let balances = ledger.balances().await?;
+    let cap_modern = Account::Capital.modern_code();
+    let cap_legacy = Account::Capital.legacy_account();
+    let already_capitalized = balances
+        .iter()
+        .any(|b| (b.account == cap_modern || b.account == cap_legacy) && !b.balance.is_zero());
+    if already_capitalized {
+        return Ok(false);
+    }
+    ledger
+        .post_entry(NewEntry {
+            reference: Some("CAPITAL-SEED".into()),
+            description: Some("Founding shareholder capital injection (boot bootstrap)".into()),
+            lines: vec![
+                EntryLine {
+                    account: Account::Bank,
+                    direction: Direction::Debit,
+                    amount,
+                },
+                EntryLine {
+                    account: Account::Capital,
+                    direction: Direction::Credit,
+                    amount,
+                },
+            ],
+        })
+        .await?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Account;

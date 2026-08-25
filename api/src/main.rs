@@ -154,6 +154,20 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
     let fraud = build_fraud_check(settings);
     info!("🔌 Ledger backend: {}", ledger.backend());
 
+    // Idempotent: seeds a founding capital injection only if the bank has
+    // never been capitalized yet (Capital balance is still zero). A fresh
+    // boot should be a real, adequately-capitalized bank, not a shell running
+    // purely on customer liabilities.
+    let seed_capital_amount: rust_decimal::Decimal = std::env::var("SEED_CAPITAL_AMOUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| rust_decimal::Decimal::new(150000000, 2)); // $1,500,000.00
+    match ledger::ensure_seed_capital(ledger.as_ref(), seed_capital_amount).await {
+        Ok(true) => info!(amount = %seed_capital_amount, "🏛️  seeded founding capital"),
+        Ok(false) => info!("🏛️  bank already capitalized, skipping seed"),
+        Err(e) => warn!("❌ Failed to seed founding capital: {}", e),
+    }
+
     // Create application state
     let app_state = handlers::AppState {
         pool: pool.clone(),
