@@ -19,8 +19,10 @@ BEATS = [
     {
         "title": "Call to order — the agenda",
         "shows": "the CEO opens the meeting and frames the cross-functional question",
-        "message": "Chair a C-suite meeting. Agenda: state of the bank this week. "
-                   "State the question you will put to each officer, in one line each.",
+        "message": "Call the C-suite meeting to order. Agenda: state of the bank this "
+                   "week. Do NOT consult any officer yet — that happens later, round "
+                   "the table. Right now just open the meeting and state, in one line "
+                   "each, the question you will put to the CFO, COO, CTO and CXO.",
         "thread": "board",
     },
     {
