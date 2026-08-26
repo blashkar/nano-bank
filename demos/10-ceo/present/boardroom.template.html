@@ -553,8 +553,13 @@ function loadSession(name){
 // sessions tabs
 const SNAMES={meeting:'🏛 Meeting', debate:'⚖ Debate', build:'🛠 Build'};
 const sess=$('sessions');
+function hasContent(rec){
+  if(!rec) return false;
+  if((rec.beats||[]).length) return true;             // board-beat shape (meeting/debate)
+  return !!((rec.steps||[]).length || rec.diff || rec.task);  // coder-run shape (build)
+}
 Object.keys(SNAMES).forEach((k)=>{
-  if(!RECORDINGS[k] || !(RECORDINGS[k].beats||[]).length) return;
+  if(!hasContent(RECORDINGS[k])) return;
   const b=document.createElement('button'); b.dataset.s=k; b.textContent=SNAMES[k];
   b.setAttribute('role','tab'); b.onclick=()=>loadSession(k); sess.appendChild(b);
 });
