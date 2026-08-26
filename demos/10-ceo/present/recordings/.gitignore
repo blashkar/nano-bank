@@ -1,3 +1,7 @@
 # Ad-hoc live-run recordings are local; the canonical ones are force-added.
 */*.json
 !*/canonical.json
+# Build's canonical.json is a live snapshot of one coder run (task/diff/tests),
+# not a curated demo take like meeting/debate's -- it changes on every capture
+# and is kept locally for future reruns rather than committed.
+build/canonical.json
