@@ -62,15 +62,17 @@ def _empty(answer: str) -> bool:
     a = (answer or "").strip()
     if not a or a == _NO_ANSWER:
         return True
-    if _JUNK_RE.match(a):
-        return True
-    # A genuine grounded report cites figures; a short-to-medium text with zero
-    # digits in it (e.g. "the analysis is complete, I can spawn a subagent to
-    # dig deeper if you'd like") is a wrap-up offer, not a real finding. A
-    # short answer that DOES carry a figure (e.g. "NIM is 3.1%.") is left
-    # alone — that is a real, if terse, claim for the grounding/claims checks
-    # downstream to judge on its own terms.
-    return len(a) < 600 and not re.search(r"\d", a)
+    # No blanket "no digits => junk" rule: a deliberately figure-free answer
+    # (a chair's plain framing/agenda statement, a scope-discipline deferral)
+    # is a valid answer on its own terms, not something to synthesize over. If
+    # a nudge fires here, its own text ("if you truly gathered nothing, say
+    # what you could not find and why") is what puts hedging language INTO an
+    # answer that was never supposed to report findings in the first place —
+    # confirmed live: a beat explicitly asking for a figure-free opening line
+    # got caught by this rule and came back apologizing for not having
+    # figures. Junk is a known PATTERN (a meta acknowledgment), not "brevity
+    # without numbers" — match it explicitly instead.
+    return bool(_JUNK_RE.match(a))
 
 
 def default_memory(settings):

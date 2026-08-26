@@ -38,11 +38,9 @@ BEATS = [
                    "officer yet — that starts next turn. Right now just state the motion "
                    "in your own words and name the order you will hear positions in: "
                    "CXO (demand) -> CTO (capacity) -> CFO (cost) -> COO (operational "
-                   "load) -> your ruling. This is a framing statement, not a report: you "
-                   "have gathered no figures yet because none are needed yet, so do NOT "
-                   "mention tools, grounding, or what you have or haven't gathered — that "
-                   "reads as an apology, not an opening. Open the debate the way a chair "
-                   "actually would: confident, plain, in command of the room.",
+                   "load) -> your ruling. This is a framing statement, not a report — "
+                   "open the debate the way a chair actually would: confident and plain, "
+                   "in command of the room.",
         "thread": "debate",
     },
     {
