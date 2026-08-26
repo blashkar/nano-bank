@@ -65,6 +65,35 @@
   .agenda .q{font-family:var(--disp);font-weight:600;font-size:clamp(15px,1.7vw,21px);color:var(--text);line-height:1.25;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+  /* ---- build stage: CTO -> coder delegation + step-through ---- */
+  .build-stage{display:none;flex:1 1 auto;min-height:340px;flex-direction:column;gap:12px;overflow:hidden}
+  .build-ruling{font-family:var(--body);font-size:13px;line-height:1.5;color:var(--muted);
+    background:rgba(255,255,255,.05);border:1px solid var(--edge);border-radius:12px;padding:12px 16px;
+    max-height:5.4em;overflow:auto;flex:none}
+  .build-ruling b{color:var(--ceo)}
+  .build-row{flex:1 1 auto;display:flex;gap:14px;min-height:0}
+  .build-timeline{width:min(260px,30%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:4px;
+    background:rgba(255,255,255,.04);border:1px solid var(--edge);border-radius:12px;padding:8px}
+  .build-timeline .ti{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;cursor:pointer;
+    font-family:var(--mono);font-size:11px;color:var(--faint);transition:.15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .build-timeline .ti:hover{background:rgba(255,255,255,.06)}
+  .build-timeline .ti.active{background:linear-gradient(90deg,rgba(142,202,230,.18),rgba(33,158,188,.10));color:var(--text);font-weight:600}
+  .build-timeline .ti.done{color:var(--muted)}
+  .build-timeline .ti .tii{font-size:14px;flex:none}
+  .build-panel{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;background:rgba(255,255,255,.04);
+    border:1px solid var(--edge);border-radius:12px;overflow:hidden}
+  .build-step-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex:none}
+  .build-step-icon{font-size:22px}
+  .build-step-label{font-family:var(--mono);font-size:13px;letter-spacing:.02em;color:var(--text);font-weight:600}
+  .build-step-body{flex:1 1 auto;overflow:auto;margin:0;padding:16px;font-family:var(--mono);font-size:13px;
+    line-height:1.55;color:var(--muted);white-space:pre-wrap;word-break:break-word}
+  .build-step-body.is-diff{font-family:var(--mono);font-size:12.5px;line-height:1.5}
+  .build-step-body .d-add{color:#8ecae6;background:rgba(142,202,230,.10);display:block}
+  .build-step-body .d-del{color:#fb8500;background:rgba(251,133,0,.10);display:block}
+  .build-step-body .d-hunk{color:var(--ceo);display:block;font-weight:600}
+  .build-step-body .d-file{color:var(--text);display:block;font-weight:700}
+  .build-step-body .d-ctx{color:var(--faint);display:block}
+
   /* ---- stage ---- */
   .stage{position:relative;flex:1 1 auto;min-height:340px}
   .table{
@@ -199,7 +228,21 @@
     <span class="q" id="agendaQ">—</span>
   </div>
 
-  <div class="stage">
+  <div class="build-stage" id="buildStage">
+    <div class="build-ruling" id="buildRuling"></div>
+    <div class="build-row">
+      <div class="build-timeline" id="buildTimeline"></div>
+      <div class="build-panel">
+        <div class="build-step-head">
+          <span class="build-step-icon" id="buildIcon">📋</span>
+          <span class="build-step-label" id="buildLabel"></span>
+        </div>
+        <pre class="build-step-body" id="buildBody"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage" id="stage">
     <div class="table"><div class="spot" id="spot"><div class="beam"></div></div></div>
 
     <div class="seat cxo" data-off="cxo"><div class="ring"></div><div class="card">🙂</div><div class="name">CXO</div><div class="role">experience</div></div>
@@ -279,7 +322,66 @@ function gist(md, max){
 }
 
 // ---- build a flat step timeline from a recording ----
+// ---- Build tab: CTO -> coder delegation, a flat run record, not board beats ----
+const TOOL_ICON = {read_file:'📖', write_file:'📝', write_code:'📝',
+                    bash:'🖥️', run_python:'🖥️', run_tests:'🧪'};
+function toolLabel(name, inp){
+  let arg='';
+  try{ arg=(inp||'').trim().split('\n')[0].slice(0,60); }catch(e){}
+  return arg? name+'('+arg+')' : name;
+}
+function buildCoderSteps(rec){
+  const steps=[];
+  const kind=rec.kind||'', task=rec.task||'';
+  steps.push({kind:'delegate', icon:'📋', label:'CTO → Coder  (delegate · '+kind+')',
+             full:task, gist:gist(task,500)});
+  for(const s of (rec.steps||[])){
+    if(s.type==='reasoning'){
+      const t=s.text||'';
+      steps.push({kind:'reasoning', icon:'🧠', label:'coder reasoning', full:t, gist:gist(t,500)});
+    } else if(s.type==='tool'){
+      const name=s.name||'tool', out=s.output||'';
+      let body=s.input||'';
+      if(out) body = body? body+'\n\n→ '+out : '→ '+out;
+      steps.push({kind:'tool', icon:(TOOL_ICON[name]||'🔧'), label:toolLabel(name, s.input||''),
+                 full:body, gist:gist(body,400)});
+    }
+  }
+  const diff=(rec.diff||'').trim();
+  if(diff) steps.push({kind:'diff', icon:'📄', label:'diff on the review branch', full:rec.diff, gist:''});
+  const tests=rec.tests||'', branch=rec.branch||'', outcome=rec.outcome||'executed';
+  let icon, tail;
+  if(outcome==='executed'){
+    icon='✅'; tail='branch: '+branch+'\ngated PR — a human reviews and merges (never auto-merged).';
+  } else {
+    icon='❌'; const reason=rec.reason||''; tail=outcome+(reason?(' — '+reason):'')+'\nno PR opened.';
+  }
+  steps.push({kind:'result', icon, label:'Coder → CTO  (result)',
+             full:'tests: '+tests+'   ·   '+tail, gist:''});
+  return steps;
+}
+const BUILD_KINDS = new Set(['delegate','reasoning','tool','diff','result']);
+
+function escapeHtml(s){
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function diffHtml(text){
+  return (text||'').split('\n').map(line=>{
+    const e=escapeHtml(line);
+    let cls='d-ctx';
+    if(line.startsWith('diff --git')||line.startsWith('index ')) cls='d-file';
+    else if(line.startsWith('+++')||line.startsWith('---')) cls='d-file';
+    else if(line.startsWith('@@')) cls='d-hunk';
+    else if(line.startsWith('+')) cls='d-add';
+    else if(line.startsWith('-')) cls='d-del';
+    return '<span class="'+cls+'">'+(e||' ')+'</span>';
+  }).join('\n');
+}
+
 function buildSteps(rec){
+  if(rec && (rec.task!==undefined || rec.diff!==undefined || rec.steps!==undefined)){
+    return buildCoderSteps(rec);
+  }
   const steps=[];
   for(const b of (rec.beats||[])){
     const beatMeta={beat:b.beat, title:b.title, question:b.question, shows:b.shows};
@@ -321,8 +423,33 @@ function dwell(step){
   return Math.min(7200, 2500 + words*130) / speed;
 }
 
+function renderBuild(){
+  const s=STEPS[idx]; if(!s) return;
+  $('beatEyebrow').textContent = 'BUILD · '+(s.label||'');
+  $('agendaQ').textContent = 'The board directs the CTO to delegate implementation to the coder.';
+  $('meta').innerHTML = 'Step <b>'+(idx+1)+'</b>/'+STEPS.length;
+  $('fill').style.width = ((idx+1)/STEPS.length*100)+'%';
+
+  $('buildIcon').textContent = s.icon||'🔧';
+  $('buildLabel').textContent = s.label||'';
+  const body=$('buildBody');
+  if(s.kind==='diff'){ body.innerHTML=diffHtml(s.full); body.classList.add('is-diff'); }
+  else { body.textContent = s.full||''; body.classList.remove('is-diff'); }
+
+  document.querySelectorAll('.build-timeline .ti').forEach((el,i)=>{
+    el.classList.toggle('active', i===idx);
+    el.classList.toggle('done', i<idx);
+  });
+  const active=document.querySelector('.build-timeline .ti.active');
+  if(active) active.scrollIntoView({block:'nearest'});
+
+  $('capLead').innerHTML='TRANSCRIPT&nbsp;&nbsp;<span class="spk" style="color:var(--cto)">'+(s.label||'')+'</span>';
+  $('capBody').textContent = s.gist || (s.full||'').slice(0,300);
+}
+
 function render(animate=true){
   const s=STEPS[idx]; if(!s) return;
+  if(BUILD_KINDS.has(s.kind)){ renderBuild(); return; }
   const off=OFF[s.speaker]||OFF.ceo, ac=off.color;
   document.documentElement.style.setProperty('--ac',ac); // not needed globally but harmless
 
@@ -390,8 +517,9 @@ function schedule(){
     idx++; $('balloon').classList.remove('show'); setTimeout(()=>{render();schedule();},130);
   }, dwell(STEPS[idx]));
 }
+let PLAY_LABEL='▶ Convene';
 function play(){ playing=true; $('play').innerHTML='⏸ Pause'; startClock(); render(); schedule(); }
-function stop(){ playing=false; $('play').innerHTML='▶ Convene'; clearTimeout(timer); stopClock(); }
+function stop(){ playing=false; $('play').innerHTML=PLAY_LABEL; clearTimeout(timer); stopClock(); }
 function toggle(){ playing?stop():play(); }
 
 function startClock(){ stopClock(); clockTimer=setInterval(()=>{clock++;renderClock();},1000); }
@@ -399,8 +527,26 @@ function stopClock(){ clearInterval(clockTimer); }
 function renderClock(){ const m=String(Math.floor(clock/60)).padStart(2,'0'),s=String(clock%60).padStart(2,'0'); $('clock').textContent=m+':'+s; }
 
 function loadSession(name){
-  SESSION=name; STEPS=buildSteps(RECORDINGS[name]||{beats:[]}); idx=0; clock=0; renderClock();
+  SESSION=name;
+  const rec = RECORDINGS[name]||{beats:[]};
+  STEPS=buildSteps(rec); idx=0; clock=0; renderClock();
   document.querySelectorAll('#sessions button').forEach(b=>b.setAttribute('aria-selected', b.dataset.s===name));
+
+  const isBuild = STEPS.length>0 && BUILD_KINDS.has(STEPS[0].kind);
+  PLAY_LABEL = isBuild ? '▶ Delegate' : '▶ Convene';
+  $('stage').style.display = isBuild ? 'none' : 'block';
+  $('buildStage').style.display = isBuild ? 'flex' : 'none';
+  if(isBuild){
+    $('buildRuling').innerHTML = clean(rec.ruling_excerpt||'').replace(/\n/g,'<br>') ||
+      "The CTO delegates the board's next step to the coder.";
+    const tl=$('buildTimeline'); tl.innerHTML='';
+    STEPS.forEach((s,i)=>{
+      const d=document.createElement('div'); d.className='ti';
+      d.innerHTML = '<span class="tii">'+(s.icon||'🔧')+'</span><span>'+(s.label||'')+'</span>';
+      d.onclick=()=>go(i);
+      tl.appendChild(d);
+    });
+  }
   stop(); render();
 }
 
@@ -425,6 +571,17 @@ function mdLite(md){
 }
 function openReader(){
   const s=STEPS[idx]; if(!s) return;
+  if(BUILD_KINDS.has(s.kind)){
+    $('rIcon').textContent=s.icon||'🔧'; $('rIcon').style.borderColor='var(--cto)';
+    $('rWho').textContent=s.label||''; $('rWho').style.color='var(--cto)';
+    $('rSub').textContent='Build · CTO ⇄ Coder';
+    $('rBody').innerHTML = s.kind==='diff' ? '<pre style="margin:0;font-family:var(--mono)">'+diffHtml(s.full)+'</pre>'
+                                            : mdLite(s.full);
+    $('rBody').scrollTop=0;
+    $('reader').classList.add('open'); $('reader').setAttribute('aria-hidden','false');
+    if(playing) stop();
+    return;
+  }
   const off=OFF[s.speaker]||OFF.ceo;
   const icon={cfo:'💰',coo:'🏭',cto:'🖥️',cxo:'🙂',ceo:'⚖️'}[s.speaker]||'🧑‍💼';
   $('rIcon').textContent=icon; $('rIcon').style.borderColor=off.color;

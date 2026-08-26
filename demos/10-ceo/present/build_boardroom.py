@@ -37,10 +37,28 @@ def _load(name: str) -> dict:
     return {"beats": beats}
 
 
+def _load_build() -> dict:
+    """The Build tab isn't board beats — it's a flat coder-run record (fetched by
+    fetch_build.py): task/kind/steps/diff/tests/branch/outcome, plus the debate's
+    own ruling excerpt for the framing header. Pass it through as-is."""
+    path = os.path.join(REC, "build", "canonical.json")
+    if not os.path.exists(path):
+        return {"steps": [], "diff": ""}
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    return {
+        "kind": d.get("kind", ""), "task": d.get("task", ""),
+        "branch": d.get("branch", ""), "outcome": d.get("outcome", "executed"),
+        "reason": d.get("reason", ""), "tests": d.get("tests", ""),
+        "steps": d.get("steps", []), "diff": d.get("diff", ""),
+        "ruling_excerpt": d.get("ruling_excerpt", ""),
+    }
+
+
 def build() -> str:
     with open(TEMPLATE, encoding="utf-8") as f:
         html = f.read()
-    data = {"meeting": _load("meeting"), "debate": _load("debate"), "build": _load("build")}
+    data = {"meeting": _load("meeting"), "debate": _load("debate"), "build": _load_build()}
     payload = json.dumps(data, ensure_ascii=False)
     # inline: replace the marker (which precedes the default {} literal) AND the
     # default literal that follows it, so `const RECORDINGS = <payload>;`.
@@ -57,6 +75,10 @@ if __name__ == "__main__":
     d = json.loads(open(out, encoding="utf-8").read().split("const RECORDINGS = ", 1)[1]
                    .split(";\n", 1)[0])
     for k, v in d.items():
-        print(f"  {k}: {len(v['beats'])} beats,",
-              sum(len(b['contributions']) for b in v['beats']), "contributions")
+        if k == "build":
+            print(f"  build: {len(v.get('steps', []))} coder steps,",
+                  f"diff {len(v.get('diff', ''))} chars, outcome={v.get('outcome')}")
+        else:
+            print(f"  {k}: {len(v['beats'])} beats,",
+                  sum(len(b['contributions']) for b in v['beats']), "contributions")
     print("wrote", out)
