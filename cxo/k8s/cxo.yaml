@@ -20,7 +20,11 @@ spec:
         env:
         - { name: CX_MCP_URL,         value: http://cx-mcp:8097/mcp }
         - { name: OLLAMA_BASE_URL,    value: https://ollama.com/v1 }
-        - { name: CXO_MODEL,          value: kimi-k3 }
+        # kimi-k3's metered credit ran out under all-officer load; the
+        # primary/fallback pattern only recovers a failed BOOT-time probe, not a
+        # mid-conversation credit exhaustion. Back on the reliable, included
+        # kimi-k2.6 until that's better understood.
+        - { name: CXO_MODEL,          value: kimi-k2.6 }
         - { name: CXO_MODEL_FALLBACK, value: kimi-k2.6 }
         - { name: API_PORT,           value: "8098" }
         - { name: QDRANT_URL,         value: http://agent-qdrant:6333 }
