@@ -22,7 +22,12 @@ BEATS = [
         "message": "Call the C-suite meeting to order. Agenda: state of the bank this "
                    "week. Do NOT consult any officer yet — that happens later, round "
                    "the table. Right now just open the meeting and state, in one line "
-                   "each, the question you will put to the CFO, COO, CTO and CXO.",
+                   "each, the question you will put to the CFO, COO, CTO and CXO. This is "
+                   "a framing statement, not a report: you have gathered no figures yet "
+                   "because none are needed yet, so do NOT mention tools, grounding, or "
+                   "what you have or haven't gathered — that reads as an apology, not an "
+                   "opening. Open the meeting the way a chair actually would: confident, "
+                   "plain, in command of the room.",
         "thread": "board",
     },
     {
