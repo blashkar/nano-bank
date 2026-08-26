@@ -23,7 +23,7 @@ spec:
         - { name: CTO_URL,            value: http://cto:8095 }
         - { name: CXO_URL,            value: http://cxo:8098 }
         - { name: OLLAMA_BASE_URL,    value: https://ollama.com/v1 }
-        - { name: CEO_MODEL,          value: kimi-k2.6 }
+        - { name: CEO_MODEL,          value: kimi-k3 }
         - { name: CEO_MODEL_FALLBACK, value: kimi-k2.6 }
         - { name: API_PORT,           value: "8099" }
         - { name: QDRANT_URL,         value: http://agent-qdrant:6333 }

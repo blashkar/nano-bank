@@ -21,7 +21,8 @@ spec:
         - { name: FINANCE_MCP_URL, value: http://finance-mcp:8088/mcp }
         - { name: OLLAMA_BASE_URL, value: https://ollama.com/v1 }
         # Kimi is the main model (kimi-k2.6, included plan); kimi-k3 is paid.
-        - { name: CFO_MODEL,       value: kimi-k2.6 }
+        - { name: CFO_MODEL,          value: kimi-k3 }
+        - { name: CFO_MODEL_FALLBACK, value: kimi-k2.6 }   # kimi-k3 is metered add-on; degrade if credit empty
         - { name: API_PORT,        value: "8089" }
         # Durable memory is best-effort: if this Qdrant is absent the CFO still
         # answers from live tools (SafeMemory degrades to no-op).

@@ -21,9 +21,10 @@ spec:
         - { name: OPERATIONS_MCP_URL, value: http://operations-mcp:8092/mcp }
         - { name: OLLAMA_BASE_URL,    value: https://ollama.com/v1 }
         # Kimi is the main model. kimi-k2.6 runs on the included plan; kimi-k3 is
-        # an extra-usage (paid) model — switch COO_MODEL to kimi-k3 once ollama
-        # extra-usage credits are enabled (ollama.com/settings).
-        - { name: COO_MODEL,          value: kimi-k2.6 }
+        # an extra-usage (paid) model, now enabled (ollama.com/settings) — same
+        # primary/fallback pattern as the other officers.
+        - { name: COO_MODEL,          value: kimi-k3 }
+        - { name: COO_MODEL_FALLBACK, value: kimi-k2.6 }   # kimi-k3 is metered add-on; degrade if credit empty
         - { name: API_PORT,           value: "8093" }
         # Durable memory is best-effort: if this Qdrant is absent the agent still
         # answers from live tools (SafeMemory degrades to no-op).
