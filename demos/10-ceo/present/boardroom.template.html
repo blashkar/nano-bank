@@ -140,19 +140,19 @@
   .seat.ceo .gavel{font-size:34px;line-height:1}
 
   /* speech balloon */
-  .balloon{position:absolute;max-width:min(360px,38vw);z-index:6;opacity:0;transform:scale(.9) translateY(6px);
+  .balloon{position:absolute;max-width:min(480px,46vw);z-index:6;opacity:0;transform:scale(.9) translateY(6px);
     transition:opacity .3s, transform .3s;pointer-events:none}
-  .balloon.show{opacity:1;transform:scale(1) translateY(0)}
-  .balloon .bub{position:relative;background:#f2f9fc;color:var(--ink);border-radius:16px;padding:13px 15px;
-    box-shadow:0 18px 40px rgba(0,0,0,.5);border:1px solid #fff}
-  .balloon .who{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
-    color:var(--ac,#556);font-weight:600;margin-bottom:4px;display:flex;gap:6px;align-items:center}
-  .balloon .who .chip{padding:1px 7px;border-radius:999px;background:var(--ac,#556);color:#fff;font-size:9px}
-  .balloon .txt{font-family:var(--body);font-size:14.5px;line-height:1.42;font-weight:500;max-height:9.6em;overflow:auto;min-height:1.2em}
+  .balloon.show{pointer-events:auto;opacity:1;transform:scale(1) translateY(0)}
+  .balloon .bub{position:relative;background:#f2f9fc;color:var(--ink);border-radius:18px;padding:18px 20px;
+    box-shadow:0 18px 40px rgba(0,0,0,.5);border:1px solid #fff;cursor:pointer}
+  .balloon .who{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ac,#556);font-weight:600;margin-bottom:6px;display:flex;gap:6px;align-items:center}
+  .balloon .who .chip{padding:2px 8px;border-radius:999px;background:var(--ac,#556);color:#fff;font-size:11px}
+  .balloon .txt{font-family:var(--body);font-size:18px;line-height:1.48;font-weight:500;max-height:11em;overflow:auto;min-height:1.2em}
   /* the chair speaks at length — a bigger bubble so the ruling isn't clipped */
-  .balloon.chair{max-width:min(500px,48vw)}
-  .balloon.chair .bub{padding:15px 18px}
-  .balloon.chair .txt{font-size:15px;line-height:1.5;max-height:15em}
+  .balloon.chair{max-width:min(640px,58vw)}
+  .balloon.chair .bub{padding:24px 28px}
+  .balloon.chair .txt{font-size:19.5px;line-height:1.55;max-height:16em}
   .balloon .tail{position:absolute;width:18px;height:18px;background:#f2f9fc;transform:rotate(45deg);border-radius:3px}
   /* tail: default points DOWN (balloon sits above the seat) */
   .balloon .tail{bottom:-7px;left:28px}
@@ -160,8 +160,9 @@
   /* balloon placed BELOW the seat (bottom-row officers) -> tail points UP */
   .balloon.below .tail{top:-7px;bottom:auto}
 
-  /* ---- caption / transcript strip ---- */
-  .caption{border-top:1px solid var(--line);padding:12px 4px 6px;min-height:74px}
+  /* ---- caption / transcript strip (hidden -- the balloon itself carries the
+     text now; click a balloon for the full reader) ---- */
+  .caption{display:none}
   .caption .lead{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:5px;display:flex;gap:10px;align-items:center}
   .caption .lead .spk{color:var(--ac,#8a93a8);font-weight:600}
   .caption .lead .fired{color:var(--ceo)}
@@ -601,6 +602,7 @@ function openReader(){
 function closeReader(){ $('reader').classList.remove('open'); $('reader').setAttribute('aria-hidden','true'); }
 $('expandBtn').onclick=openReader;
 $('capBody').onclick=openReader;
+$('balloon').onclick=openReader;   // caption strip is hidden -- click the balloon to read in full
 $('rClose').onclick=closeReader;
 $('reader').onclick=e=>{ if(e.target===$('reader')) closeReader(); };
 
