@@ -50,7 +50,10 @@ BEATS = [
                    "consult anyone else this turn) for the customer case — how strong "
                    "is demand for recurring e-Transfers, and what CX signal backs it "
                    "(issues, NPS/CSAT, the feature-request theme)? Relay the CXO's "
-                   "answer, attributing the figures.",
+                   "answer, attributing the figures. Require the CXO to open with an "
+                   "explicit one-line vote — AYE (ship the pilot) or NAY (do not) — "
+                   "before the supporting detail; a wall of metrics with no stated "
+                   "position is not an answer to a motion.",
         "thread": "debate",
     },
     {
@@ -60,7 +63,12 @@ BEATS = [
                    "what the CXO just argued, then ask: can the platform take a capped "
                    "pilot (500 customers, $50/month cap, Interac-only) this quarter, and "
                    "what is the reliability/capacity risk right now? Relay the CTO's "
-                   "answer and say where it agrees or conflicts with the CXO's position.",
+                   "answer and say where it agrees or conflicts with the CXO's position. "
+                   "Require the CTO to open with an explicit one-line vote — AYE or NAY "
+                   "— before the supporting detail; a wall of metrics with no stated "
+                   "position is not an answer to a motion. This is a consultation, not a "
+                   "directive: the CTO is asked for its position ONLY, not to act on "
+                   "anything or delegate any work.",
         "thread": "debate",
     },
     {
@@ -70,7 +78,10 @@ BEATS = [
                    "CTO's capacity concern for the CFO, then ask: what does the capped "
                    "pilot (500 customers, $50/month cap) cost, and does the return (NIM / "
                    "RAROC / fee income) justify piloting it this quarter versus deferring? "
-                   "Relay the CFO's answer, attributing every figure.",
+                   "Relay the CFO's answer, attributing every figure. Require the CFO to "
+                   "open with an explicit one-line vote — AYE or NAY — before the "
+                   "supporting detail; a wall of metrics with no stated position is not "
+                   "an answer to a motion.",
         "thread": "debate",
     },
     {
@@ -84,20 +95,30 @@ BEATS = [
                    "current Interac activity? This pilot does not touch AFT or Lynx, so "
                    "do not evaluate those rails — stay on Interac capacity/float for this "
                    "bounded volume specifically. What would break first, if anything, at "
-                   "this scale? Relay the COO's answer.",
+                   "this scale? Relay the COO's answer. Require the COO to open with an "
+                   "explicit one-line vote — AYE or NAY — before the supporting detail; "
+                   "a wall of metrics with no stated position is not an answer to a "
+                   "motion.",
         "thread": "debate",
     },
     {
         "title": "The chair rules",
-        "shows": "the CEO weighs the four positions and makes a grounded call",
+        "shows": "the CEO tallies the vote and makes a grounded call",
         "message": "Close the debate and RULE — do NOT consult anyone again, reason "
                    "only from the four positions already on the record this session. "
-                   "Weigh them against each other: who is right on what, and where the "
-                   "real trade-off sits. Give your decision on the CAPPED PILOT as "
-                   "scoped (500 customers, $50/month cap, Interac-only) — ship the pilot, "
-                   "defer, or phase it — with the grounded reasons, and name which "
-                   "officer you would direct next and why (do not act; this is the "
-                   "ruling).",
+                   "First, EXPLICITLY TALLY THE VOTE: list all four officers by name "
+                   "with their stated position (AYE or NAY) exactly as each one voted — "
+                   "a real roll call, not a paraphrase — then state the count (e.g. "
+                   "'2 AYE, 2 NAY'). Then weigh the four positions against each other: "
+                   "who is right on what, and where the real trade-off sits. Your ruling "
+                   "is your own grounded judgment, not just whatever the tally says — "
+                   "say explicitly whether you are ruling WITH or AGAINST the majority "
+                   "and why. Give your decision on the CAPPED PILOT as scoped (500 "
+                   "customers, $50/month cap, Interac-only) — SHIP the pilot, DEFER, or "
+                   "PHASE it — stated as one unambiguous word up front, with the "
+                   "grounded reasons after. Name which officer you would direct next and "
+                   "why, but do NOT direct or act yet — that only happens after this "
+                   "ruling is on the record, in a later turn.",
         "thread": "debate",
         "outcome_hint": "read_only",
     },
