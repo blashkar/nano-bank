@@ -297,10 +297,35 @@ async fn pay_credit_card(
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
-/// A reference number matching `^[A-Z0-9]{10,20}$`: `prefix` + 12 digits.
+/// A reference number matching `^[A-Z0-9]{10,20}$`: `prefix` + 12 base-36 chars.
+///
+/// Base 36, not base 10, and the difference is not cosmetic. `reference_number`
+/// is uniquely constrained in `transactions` and has no retry, so a collision is
+/// a 500 that aborts whatever the caller was doing. Twelve DIGITS is a 10^12
+/// space, and the table is append-only across the life of a deployment — a
+/// corpus run left 1,734,883 rows over 14 prefixes, of which `FEE` alone held
+/// 458,923. By the birthday bound that is a ~10% chance of collision on that
+/// prefix alone, better than 20% across all of them, and it compounds with every
+/// run because history accumulates. It duly fired, killing an 8-hour run at 75%.
+///
+/// The same twelve characters over `[0-9A-Z]` give 36^12 ~ 4.7e18, four million
+/// times larger, which puts the same 1.7M rows at odds of roughly 3e-7. Length
+/// and pattern are unchanged, so nothing downstream sees a difference.
+///
+/// This is still probabilistic. The deterministic fix is to retry on unique
+/// violation, which is worth doing if these ever become customer-visible
+/// identifiers rather than internal references — but it touches every insert
+/// path, and this does not.
 pub(crate) fn reference_number(prefix: &str) -> String {
-    let n = (Uuid::new_v4().as_u128() % 1_000_000_000_000) as u64;
-    format!("{}{:012}", prefix, n)
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut n = Uuid::new_v4().as_u128();
+    let mut out = String::with_capacity(prefix.len() + 12);
+    out.push_str(prefix);
+    for _ in 0..12 {
+        out.push(ALPHABET[(n % 36) as usize] as char);
+        n /= 36;
+    }
+    out
 }
 
 /// Round to 2 dp (the schema rejects anything else) and reject non-positive.
@@ -950,4 +975,51 @@ async fn recompute_card_available(
     .bind(account_id)
     .fetch_one(&mut **tx)
     .await
+}
+
+#[cfg(test)]
+mod reference_number_tests {
+    use super::reference_number;
+    use std::collections::HashSet;
+
+    #[test]
+    fn matches_the_documented_pattern() {
+        // `^[A-Z0-9]{10,20}$`. LYNXH is the longest prefix in use (5), so the
+        // widest output is 17 — inside the 20 the schema allows.
+        for prefix in ["FEE", "VISA", "LYNXH"] {
+            let r = reference_number(prefix);
+            assert_eq!(r.len(), prefix.len() + 12, "{r}");
+            assert!(
+                (10..=20).contains(&r.len()),
+                "{r} is outside the pattern's length"
+            );
+            assert!(
+                r.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+                "{r} has a character outside [A-Z0-9]"
+            );
+        }
+    }
+
+    #[test]
+    fn uses_the_whole_alphabet_not_just_digits() {
+        // The regression this guards. Twelve DIGITS is a 10^12 space, and
+        // `reference_number` is uniquely constrained with no retry: a corpus run
+        // accumulated 1.7M rows over 14 prefixes and duly collided, returning a
+        // 500 that killed the run. Letters are what make the space 36^12.
+        let seen: HashSet<char> = (0..200)
+            .flat_map(|_| reference_number("FEE").chars().skip(3).collect::<Vec<_>>())
+            .collect();
+        assert!(
+            seen.iter().any(|c| c.is_ascii_uppercase()),
+            "no letters in 2400 generated characters — the space is still base 10"
+        );
+    }
+
+    #[test]
+    fn does_not_repeat_across_many_draws() {
+        let n = 20_000;
+        let seen: HashSet<String> = (0..n).map(|_| reference_number("FEE")).collect();
+        assert_eq!(seen.len(), n, "reference numbers repeated within one batch");
+    }
 }
