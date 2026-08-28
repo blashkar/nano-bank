@@ -18,6 +18,7 @@ class Settings:
     act_max_per_tx: Decimal
     confirm_ttl_s: int
     mcp_url: str
+    cxo_url: str
     branch_port: int
     console_port: int
     # External mandated-agent gateway (the branch holds the agent creds)
@@ -53,6 +54,7 @@ class Settings:
             act_max_per_tx=Decimal(g("ACT_MAX_PER_TX", "1000")),
             confirm_ttl_s=int(g("CONFIRM_TTL_S", "300")),
             mcp_url=g("MCP_URL", "http://localhost:8087/mcp"),
+            cxo_url=g("CXO_URL", "http://cxo:8098"),
             branch_port=int(g("BRANCH_PORT", "8086")),
             console_port=int(g("CONSOLE_PORT", "8505")),
             nano_agent_id=g("NANO_AGENT_ID"),

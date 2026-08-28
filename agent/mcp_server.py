@@ -73,6 +73,7 @@ class Deps:
     audit: AuditLog
     actions: ActionStore
     bank: "BankClient"
+    cxo_url: str = "http://cxo:8098"
 
 
 def build_mcp(deps: Deps) -> FastMCP:
@@ -190,6 +191,21 @@ def build_mcp(deps: Deps) -> FastMCP:
         except ActError as e:
             return {"error": str(e)}
 
+    @mcp.tool()
+    def file_cx_issue(category: str, severity: str, summary: str,
+                      detail: str = "") -> dict:
+        """File a customer-experience complaint/issue on the bound client's behalf
+        (category in onboarding|declines_friction|fees|rail_experience|app_ux|
+        feature_request|other; severity in low|medium|high|urgent). Records it
+        durably for the CXO and, for high/urgent, best-effort escalates. Benign,
+        non-money — not confirm-gated."""
+        from . import cx_issue_action
+        try:
+            return cx_issue_action.file_and_maybe_escalate(
+                deps.db, current_customer(), deps.cxo_url, category, severity, summary, detail)
+        except cx_issue_action.CxIssueError as e:
+            return {"error": str(e)}
+
     return mcp
 
 
@@ -201,7 +217,8 @@ def build_deps(settings: Settings) -> Deps:
     bank = BankClient(settings.nano_bank_api)
     actions = ActionStore(db, bank, audit,
                           max_per_tx=settings.act_max_per_tx, ttl_s=settings.confirm_ttl_s)
-    return Deps(db=db, memory=memory, audit=audit, actions=actions, bank=bank)
+    return Deps(db=db, memory=memory, audit=audit, actions=actions, bank=bank,
+                cxo_url=settings.cxo_url)
 
 
 def main():
