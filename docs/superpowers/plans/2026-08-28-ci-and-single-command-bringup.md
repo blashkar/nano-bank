@@ -203,17 +203,9 @@ Notes for the implementer:
   step is what makes `cargo test` actually exercise them instead of skipping
   everything silently.
 
-- [ ] **Step 2: Verify YAML is well-formed**
+- [x] **Step 2: Verify YAML is well-formed** — done, no error.
 
-Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))" ` (or any local YAML linter available)
-Expected: no error.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add .github/workflows/ci.yml
-git commit -m "ci: add rust job (real Postgres + real modern-core, clippy report-only)"
-```
+- [x] **Step 3: Commit** — done (`f588d16` on `ci-and-bringup`).
 
 ---
 
@@ -261,54 +253,86 @@ No Postgres, no kind, no Playwright in this job — it only needs Node
 (`ui/package.json` scripts: `typecheck` → `tsc --noEmit`, `lint` → `eslint .`,
 `test` → `vitest run`).
 
-- [ ] **Step 2: Verify YAML is still well-formed**
+- [x] **Step 2: Verify YAML is still well-formed** — done, two jobs (`rust`, `ui`).
 
-Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
-Expected: no error, and the file now has two top-level jobs (`rust`, `ui`).
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add .github/workflows/ci.yml
-git commit -m "ci: add ui job (typecheck, lint, vitest)"
-```
+- [x] **Step 3: Commit** — done (`786bb75` on `ci-and-bringup`).
 
 ---
 
-### Task 3: Verify the CI workflow live
+### Task 3: Verify the CI workflow live — actual outcome (deviated from the plan)
 
-**Files:** none (verification only, against GitHub Actions)
+**Files:** `.github/workflows/ci.yml` copy merged to `main` via PR #90;
+`api/src/handlers/cards.rs`, `api/src/handlers/customers.rs` (PR #91);
+`ui/src/app/dashboard/loans/apply/page.tsx` (PR #92).
 
-- [ ] **Step 1: Push a throwaway branch with the new workflow**
+What actually happened, in order:
 
-```bash
-git push -u origin ci-and-bringup
-```
+1. Pushed `ci-and-bringup` and opened PR #89 — **no CI run fired at all.**
+   Root cause (discovered live, not anticipated by the plan): GitHub does not
+   run a `pull_request`-triggered workflow until that workflow file already
+   exists on the repo's default branch. Since PR #85 (2026-08-22) fully
+   reverted the prior CI attempt, `main` had zero workflow files, so nothing
+   could trigger — for *any* PR, not just this one.
+2. User-approved bootstrap: opened PR #90 with **only** `.github/workflows/ci.yml`
+   (nothing else) against `main`, to get the workflow registered.
+3. PR #90's own first run **did** fire (pull_request events register live once
+   any workflow file is pushed to any branch with an open PR against the
+   default branch) and found two real, pre-existing failures — unrelated to
+   this work, surfaced for the first time because nothing had ever gated on
+   them:
+   - `rust` job: `cargo fmt --all -- --check` failed — 108 diff hunks across
+     19 files of pre-existing drift.
+   - `ui` job: `npm run lint` failed on one real `error`-severity finding,
+     `react-hooks/set-state-in-effect` at
+     `ui/src/app/dashboard/loans/apply/page.tsx:44` (plus 9 pre-existing
+     `no-unused-vars` warnings, which don't block).
+4. User chose (mirroring how clippy was already handled) to **fix** rather
+   than weaken the gate:
+   - PR #91: `cargo fmt --all` on the two affected files
+     (`api/src/handlers/cards.rs`, `api/src/handlers/customers.rs`) —
+     whitespace-only, verified with a local `cargo build --all-targets`.
+     Merged to `main`.
+   - PR #92: replaced the `useState`+`useEffect` pair for the loan-apply
+     page's derived `livePmt` preview with a plain value computed during
+     render (the standard fix for this React anti-pattern — no external
+     system or subscription was involved). Verified locally with
+     `npm run lint` (0 errors after, was 1) and `npm run typecheck`; `npm
+     test` couldn't run locally (this machine's Node is 18.19.1, the project
+     needs ≥20.9.0) so it was left to the real CI run. Merged to `main`.
+5. Updated PR #90's branch against the now-clean `main` and re-ran — **both
+   jobs fully green**, including `npm test` on the correct Node 20. Merged
+   PR #90 to `main` with user approval.
+6. Confirmed the `push`-to-`main` trigger also fired from that merge (visible
+   in `gh run list --branch main`).
+7. Verified a real failure actually fails the gate: rather than breaking
+   `ci-and-bringup` itself (which, from the earlier branch-move work in this
+   session, is based on the unmerged `agent-ceo` lineage and would have
+   pulled ~20 unrelated commits into any PR diff against `main`), created a
+   disposable branch off clean `main` (`ci-gate-verify`), appended an
+   intentionally-failing Rust `#[test]` and an intentionally-throwing UI
+   file, opened a throwaway PR (#93), and watched **both jobs fail** —
+   `rust` at `cargo fmt --check` (the raw appended test wasn't
+   formatted), `ui` at the `test` step with the exact injected error
+   message. Closed PR #93 without merging and deleted the branch/worktree.
 
-- [ ] **Step 2: Watch the run**
+Net result: `.github/workflows/ci.yml` is live on `main`, verified green on a
+clean base and verified to actually fail on real breakage, via `push` and
+`pull_request` both. `ci-and-bringup` (this branch, PR #89) still needs
+`main` merged into it (or a rebase) to pick up the fmt/lint fixes and get its
+own PR-triggered CI run — left for a later step since it's entangled with the
+unrelated `agent-ceo` history and isn't blocking the remaining `./nb` tasks
+(all local, no CI dependency).
 
-```bash
-gh run watch --exit-status
-```
+Original plan steps below are superseded by the above; kept for reference.
 
-Expected: both `rust` and `ui` jobs finish green. If `rust` fails at "Load
-nano-bank schema" or "Start bank API", read the step log — the two most likely
-causes are a schema file order issue (tables must apply in the sorted order
-already reflected by the `for f in src/core/tables/*.sql` glob) or the
-modern-core image failing to build (check the "Bring up real modern core" step
-log via `gh run view --log`).
+- [x]~~Step 1: Push a throwaway branch with the new workflow~~ — superseded (see above; a bootstrap PR was required instead of a direct push).
+- [x] ~~Step 2: Watch the run~~ — superseded, see above.
+- [x] ~~Step 3: Confirm clippy is report-only even with findings~~ — confirmed live in the PR #90 rerun: `ui`/`rust` both green with clippy findings present and non-blocking.
+- [x] ~~Step 4: Confirm a real failure actually fails the job~~ — done via PR #93 (see above), not on `ci-and-bringup`.
 
-- [ ] **Step 3: Confirm clippy is report-only even with findings**
-
-Run: `cd api && cargo clippy --all-targets 2>&1 | tail -20`
-Expected: some pre-existing warnings print (this repo has known lint debt per
-the design doc); note whether there are any and confirm the CI step for
-clippy still shows green in the Actions log despite them (the `|| true` at the
-end of that step is what guarantees this).
-
-- [ ] **Step 4: Confirm a real failure actually fails the job**
-
-On the same branch, temporarily break a test:
+Steps below (originally 4 and 6) are retained only as a description of the
+mechanism used; the actual break was combined into one throwaway branch/PR
+rather than two separate sequential edits on `ci-and-bringup`:
 
 ```bash
 cd api
