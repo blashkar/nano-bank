@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# ./nb — single entry point for standing up nano-bank: the full stack + world-
+# model data, or the full stack + one demo. Wraps the existing
+# scripts/deploy-all.sh and each demo's own runner rather than reimplementing
+# them.
+#
+#   ./nb up --world-model [--scenario <name>]
+#   ./nb up --demo <NN-name>
+#   ./nb down
+#   ./nb list-demos
+set -euo pipefail
+cd "$(dirname "$0")"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+
+WORLD_MODEL_DIR="../nano-bank-world-model"
+
+DEMO_NAMES=(01-onboarding 02-simulator 03-manager-chat 04-external-agent \
+            05-coo 06-cfo 07-suite-console 08-cto 09-cxo 10-ceo)
+
+demo_desc() {
+  case "$1" in
+    01-onboarding)     echo "Create a customer, open accounts, post transactions" ;;
+    02-simulator)      echo "Auto-generate activity across every transaction type incl. failures" ;;
+    03-manager-chat)   echo "Personal manager as a left-right conversation" ;;
+    04-external-agent) echo "Autonomous LLM agent operating a customer's bank under a mandate" ;;
+    05-coo)            echo "Agent COO -- narrated 7-beat operational review + levers" ;;
+    06-cfo)            echo "Agent CFO -- narrated 7-beat financial review + levers" ;;
+    07-suite-console)  echo "Single-pane console: drive COO/CFO + watch the live audit ledger" ;;
+    08-cto)            echo "Agent CTO -- reliability review, refused restart, autonomous rollback" ;;
+    09-cxo)            echo "Agent CXO -- customer-experience analyst + ranked feature backlog" ;;
+    10-ceo)            echo "Agent CEO -- synthesizes COO/CFO/CTO/CXO into an executive brief" ;;
+    *) echo "" ;;
+  esac
+}
+
+is_valid_demo() {
+  local name="$1" d
+  for d in "${DEMO_NAMES[@]}"; do [ "$d" = "$name" ] && return 0; done
+  return 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./nb up --world-model [--scenario <name>]
+  ./nb up --demo <NN-name>
+  ./nb down
+  ./nb list-demos
+EOF
+}
+
+cmd_list_demos() {
+  local d
+  for d in "${DEMO_NAMES[@]}"; do
+    printf '%-18s %s\n' "$d" "$(demo_desc "$d")"
+  done
+}
+
+wait_http() {  # url label
+  echo "waiting for $2 ($1) ..."
+  for _ in $(seq 1 60); do curl -fsS "$1" >/dev/null 2>&1 && return 0; sleep 1; done
+  echo "$2 never came up at $1"
+  return 1
+}
+
+pf() {  # svc localport -> backgrounds a port-forward, tracked by a pidfile
+  local svc="$1" port="$2"
+  kubectl --context kind-nano-bank -n nano-bank port-forward "svc/$svc" "$port:$port" \
+    >"/tmp/nb-pf-$svc.log" 2>&1 &
+  echo $! > "/tmp/nb-pf-$svc.pid"
+}
+
+cmd_down() {
+  echo "stopping everything ./nb can start ..."
+  local f pid
+  for f in /tmp/nb-*.pid; do
+    [ -f "$f" ] || continue
+    pid=$(cat "$f")
+    if kill "$pid" 2>/dev/null; then echo "  stopped pid $pid ($f)"; fi
+    rm -f "$f"
+  done
+  if kind get clusters 2>/dev/null | grep -qx "nano-bank"; then
+    kind delete cluster --name nano-bank
+  fi
+  if kind get clusters 2>/dev/null | grep -qx "modern-core"; then
+    kind delete cluster --name modern-core
+  fi
+  echo "down"
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    up)
+      shift
+      local mode="${1:-}"
+      case "$mode" in
+        --world-model)
+          shift
+          local scenario=""
+          if [ "${1:-}" = "--scenario" ]; then scenario="${2:-}"; fi
+          cmd_up_world_model "$scenario"
+          ;;
+        --demo)
+          shift
+          [ -n "${1:-}" ] || { echo "./nb up --demo <NN-name>"; exit 2; }
+          cmd_up_demo "$1"
+          ;;
+        *) usage; exit 2 ;;
+      esac
+      ;;
+    down) cmd_down ;;
+    list-demos) cmd_list_demos ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+main "$@"
