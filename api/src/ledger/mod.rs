@@ -152,6 +152,14 @@ pub enum LedgerError {
     Backend { status: u16, body: String },
     #[error("ledger transport error: {0}")]
     Transport(String),
+    #[error("local database error: {0}")]
+    Database(String),
+}
+
+impl From<sqlx::Error> for LedgerError {
+    fn from(e: sqlx::Error) -> Self {
+        LedgerError::Database(e.to_string())
+    }
 }
 
 /// The accounting core seen by nano-bank. Kept intentionally small for this pass
@@ -168,6 +176,12 @@ pub trait Ledger: Send + Sync {
     async fn balances(&self) -> Result<Vec<AccountBalance>, LedgerError>;
 }
 
+/// A fixed, arbitrary key for the Postgres session advisory lock that
+/// serializes [`ensure_seed_capital`] across concurrent boots. Any i64 works;
+/// this one is just `"CAPITAL-SEED"`'s first 8 bytes as an i64, so it doesn't
+/// collide with other advisory locks in the codebase by chance.
+const SEED_CAPITAL_LOCK_KEY: i64 = 0x4341_5049_5441_4c2d;
+
 /// Idempotent boot-time bootstrap: if the bank has never been capitalized (no
 /// nonzero `Capital` balance yet), post a balanced founding journal entry
 /// (debit `Bank`, credit `Capital`) for `amount` — so a fresh boot starts as a
@@ -177,7 +191,38 @@ pub trait Ledger: Send + Sync {
 /// Safe to call on every boot: once `Capital` is nonzero — from this bootstrap
 /// or a later real capital event — it is left alone. Returns whether it
 /// actually seeded, for startup logging.
+///
+/// The read-then-post is a check-then-act over an HTTP-backed ledger (no
+/// local transaction can wrap it), so a Postgres session advisory lock on
+/// `pool` — the same local DB every boot already talks to — serializes
+/// concurrent callers (e.g. two pods alive during a k8s `RollingUpdate`): a
+/// racing caller blocks here until the winner's post has landed, then
+/// observes the now-nonzero balance and safely no-ops, instead of both
+/// racing the check and both posting.
 pub async fn ensure_seed_capital(
+    ledger: &dyn Ledger,
+    pool: &sqlx::PgPool,
+    amount: Decimal,
+) -> Result<bool, LedgerError> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(SEED_CAPITAL_LOCK_KEY)
+        .execute(&mut *conn)
+        .await?;
+
+    let result = ensure_seed_capital_locked(ledger, amount).await;
+
+    // Always release, even if the check/post above failed, so a failed boot
+    // doesn't strand the lock on this pooled connection for its next borrower.
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(SEED_CAPITAL_LOCK_KEY)
+        .execute(&mut *conn)
+        .await;
+
+    result
+}
+
+async fn ensure_seed_capital_locked(
     ledger: &dyn Ledger,
     amount: Decimal,
 ) -> Result<bool, LedgerError> {

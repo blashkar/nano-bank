@@ -162,7 +162,7 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| rust_decimal::Decimal::new(150000000, 2)); // $1,500,000.00
-    match ledger::ensure_seed_capital(ledger.as_ref(), seed_capital_amount).await {
+    match ledger::ensure_seed_capital(ledger.as_ref(), &pool, seed_capital_amount).await {
         Ok(true) => info!(amount = %seed_capital_amount, "🏛️  seeded founding capital"),
         Ok(false) => info!("🏛️  bank already capitalized, skipping seed"),
         Err(e) => warn!("❌ Failed to seed founding capital: {}", e),

@@ -90,9 +90,13 @@ depth:
   `sudo coder/k8s/egress-firewall.sh` to deny every kind pod from reaching this
   host and the LAN (pod-to-pod and internet stay up). Internet egress is left open
   for `ollama.com` and is harmless: with the above, the pod has nothing sensitive
-  to send. `--remove` reverses it, `--status` shows the rules, `--verify` exits
-  non-zero if they're absent (the rules live in `DOCKER-USER` and do **not** survive
-  a Docker restart or host reboot, so `deploy.sh` re-checks and warns loudly).
+  to send. Two chains are involved — pod-to-LAN traffic is genuinely forwarded
+  and blocked in `DOCKER-USER`, but pod-to-host traffic is locally delivered by
+  the kernel straight to `INPUT` (it never reaches `DOCKER-USER`/`FORWARD`), so
+  that half of the rule set lives in `INPUT` instead. `--remove` reverses both,
+  `--status` shows the rules, `--verify` exits non-zero if either chain's rules
+  are absent (neither survives a Docker restart or host reboot, so `deploy.sh`
+  re-checks and warns loudly).
 
 ## Run transcripts (`GET /runs`)
 
