@@ -133,6 +133,35 @@ cmd_up_world_model() {
   [ "$failures" -eq 0 ] || exit 1
 }
 
+cmd_up_demo() {
+  local name="$1"
+  is_valid_demo "$name" || {
+    echo "unknown demo: $name"
+    echo
+    cmd_list_demos
+    exit 1
+  }
+
+  case "$name" in
+    05-coo|06-cfo|08-cto|09-cxo|10-ceo)
+      # These runners bring up the base stack + their own agent overlay
+      # themselves (gated by the same flag as --no-up) -- call with no flags.
+      echo "launching demos/$name/run-demo.sh (it brings the stack up itself) ..."
+      "demos/$name/run-demo.sh"
+      ;;
+    07-suite-console)
+      echo "bringing up the stack + coo/cfo overlays for 07-suite-console ..."
+      SKIP_UI=1 ./scripts/deploy-all.sh
+      ./coo/k8s/deploy.sh
+      ./cfo/k8s/deploy.sh
+      "demos/07-suite-console/run.sh"
+      ;;
+    01-onboarding|02-simulator|03-manager-chat|04-external-agent)
+      up_plain_streamlit_demo "$name"
+      ;;
+  esac
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
