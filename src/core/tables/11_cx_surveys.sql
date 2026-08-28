@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS survey_campaigns (
     segment     TEXT NOT NULL,
     question    TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'open',
+    source      TEXT NOT NULL DEFAULT 'demo_seed',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS survey_responses (

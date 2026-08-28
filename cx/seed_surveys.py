@@ -17,13 +17,17 @@ def campaign_specs() -> list[dict]:
 
 def seed(db_params: dict) -> list[dict]:
     db = CxDB(db_params)
-    # clear prior demo campaigns so the seed is reproducible
+    # clear prior demo campaigns so the seed is reproducible — scoped to
+    # source='demo_seed' so a campaign created through any other path is
+    # never touched by a re-seed.
     import psycopg2
     conn = psycopg2.connect(**db_params)
     try:
         with conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM survey_responses")
-            cur.execute("DELETE FROM survey_campaigns")
+            cur.execute(
+                "DELETE FROM survey_responses WHERE campaign_id IN"
+                " (SELECT id FROM survey_campaigns WHERE source = 'demo_seed')")
+            cur.execute("DELETE FROM survey_campaigns WHERE source = 'demo_seed'")
     finally:
         conn.close()
     return [_campaigns.create_campaign(db, sp["instrument"], sp["segment"], sp["question"])

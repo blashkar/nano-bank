@@ -5,17 +5,35 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 _ESCALATE = {"high", "urgent"}
+_CATEGORIES = {"onboarding", "declines_friction", "fees", "rail_experience", "app_ux",
+              "feature_request", "other"}
+_SEVERITIES = {"low", "medium", "high", "urgent"}
+
+
+class CxIssueError(Exception):
+    """A bad category/severity, or a DB failure while filing the issue."""
 
 
 def _default_post(url: str, json: dict) -> None:
     import httpx
-    httpx.post(url, json=json, timeout=5)
+    # a short connect timeout, separate from the overall budget: if the CXO
+    # pod is down or unreachable, filing latency shouldn't wait out the full
+    # 5s before the caller (who only cares that the durable row landed) gets
+    # control back.
+    httpx.post(url, json=json, timeout=httpx.Timeout(5.0, connect=1.0))
 
 
 def file_and_maybe_escalate(db, customer_id: str, cxo_url: str, category: str,
                             severity: str, summary: str, detail: str,
                             http_post: Optional[Callable] = None) -> dict:
-    issue_id = db.insert_cx_issue(customer_id, category, severity, summary, detail)
+    if category not in _CATEGORIES:
+        raise CxIssueError(f"unknown category: {category!r}")
+    if severity not in _SEVERITIES:
+        raise CxIssueError(f"unknown severity: {severity!r}")
+    try:
+        issue_id = db.insert_cx_issue(customer_id, category, severity, summary, detail)
+    except Exception as e:
+        raise CxIssueError(f"failed to file cx issue: {e}") from e
     if severity in _ESCALATE:
         post = http_post or _default_post
         try:

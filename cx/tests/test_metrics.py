@@ -66,12 +66,23 @@ def test_issue_summary_by_category_severity_and_trend():
 def test_notable_issues_high_severity_first_limited():
     rows = [
         {"id": "1", "severity": "low", "summary": "x", "category": "fees",
-         "customer_id": "c1", "created_at": "2026-08-10"},
+         "customer_id": "c1", "created_at": "2026-08-10", "status": "open"},
         {"id": "2", "severity": "urgent", "summary": "y", "category": "rail_experience",
-         "customer_id": "c2", "created_at": "2026-08-14"}]
+         "customer_id": "c2", "created_at": "2026-08-14", "status": "open"}]
     out = m.notable_issues(rows, limit=1)
     assert len(out) == 1 and out[0]["id"] == "2"
     assert "customer_id" in out[0]  # scoped id retained for re-grounding
+
+
+def test_notable_issues_excludes_resolved_even_if_more_severe():
+    rows = [
+        {"id": "1", "severity": "urgent", "summary": "closed long ago", "category": "fees",
+         "customer_id": "c1", "created_at": "2026-08-01", "status": "resolved"},
+        {"id": "2", "severity": "high", "summary": "still open", "category": "app_ux",
+         "customer_id": "c2", "created_at": "2026-08-14", "status": "open"}]
+    out = m.notable_issues(rows, limit=5)
+    assert [r["id"] for r in out] == ["2"]
+    assert out[0]["status"] == "open"
 
 
 def test_nps_score_and_buckets():
