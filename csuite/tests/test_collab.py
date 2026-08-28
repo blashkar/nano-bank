@@ -79,7 +79,26 @@ def test_direct_reports_no_lever_when_no_new_row():
     out = asyncio.run(tool.ainvoke({"directive": "Roll back the deploy."}))
     assert out["officer_acted"] is False
     assert out["officer_row"] is None
+    assert out["ambiguous"] is False
     assert audit.direct_calls[0][2]["officer_acted"] is False
+
+
+def test_direct_flags_ambiguous_when_more_than_one_row_lands_in_the_window():
+    # a second writer (another directive, or any other trigger of the officer's
+    # lever) landed in the same before/after window — can't be honestly pinned
+    # on this call, so it must not silently pick the last row as "the" result.
+    audit = FakeAudit(before_seq=10, new_rows=[
+        {"seq": 11, "action": "cut_aft_batch", "effect": {"batch": "B6"}},
+        {"seq": 12, "action": "cut_aft_batch", "effect": {"batch": "B7"}}])
+    client = FakeClient({"answer": "Cut batch B7."})
+    tool = collab.direct_tool("coo", "http://coo:8093", audit, client=client)
+
+    out = asyncio.run(tool.ainvoke({"directive": "Cut the pending AFT batch."}))
+    assert out["officer_acted"] is True
+    assert out["ambiguous"] is True
+    assert out["officer_row"] is None   # can't honestly single one out
+    assert out["candidate_rows"] == audit.new_rows
+    assert audit.direct_calls[0][2]["ambiguous"] is True
 
 
 def test_build_tools_wires_consults_for_all_and_directs_for_directable():
