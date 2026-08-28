@@ -150,7 +150,9 @@ async fn update_profile(
     // Verify and hash password BEFORE opening the database transaction
     if let Some(ref new_pwd) = payload.new_password {
         if new_pwd.len() < 8 {
-            return Err(AppError::BadRequest("New password must be at least 8 characters".to_string()));
+            return Err(AppError::BadRequest(
+                "New password must be at least 8 characters".to_string(),
+            ));
         }
 
         let current_pwd = payload.current_password.as_deref().ok_or_else(|| {
@@ -159,19 +161,23 @@ async fn update_profile(
 
         // Retrieve existing password hash using pool directly
         let password_hash: String = sqlx::query_scalar(
-            "SELECT password_hash FROM customer_credentials WHERE customer_id = $1"
+            "SELECT password_hash FROM customer_credentials WHERE customer_id = $1",
         )
         .bind(auth.customer_id)
         .fetch_one(&state.pool)
         .await
         .map_err(|e| match e {
-            sqlx::Error::RowNotFound => AppError::NotFound("Customer credentials not found".to_string()),
+            sqlx::Error::RowNotFound => {
+                AppError::NotFound("Customer credentials not found".to_string())
+            }
             e => AppError::Database(e),
         })?;
 
         // Verify current password against stored hash (slow Argon2 verify)
         if !crate::utils::password::verify_password(current_pwd, &password_hash)? {
-            return Err(AppError::Authentication("The current password you entered is incorrect".to_string()));
+            return Err(AppError::Authentication(
+                "The current password you entered is incorrect".to_string(),
+            ));
         }
 
         // Hash new password (slow Argon2 hash)
@@ -222,7 +228,7 @@ async fn update_profile(
             UPDATE customer_credentials
             SET password_hash = $1, password_changed_at = CURRENT_TIMESTAMP
             WHERE customer_id = $2
-            "#
+            "#,
         )
         .bind(hash)
         .bind(auth.customer_id)
