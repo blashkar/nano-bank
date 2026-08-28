@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { applyLoanAction } from "@/actions/loans";
 import { 
@@ -31,29 +31,25 @@ export default function ApplyLoanPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Computed state (live PMT preview)
-  const [livePmt, setLivePmt] = useState(0);
-
-  // Amortized Payment (PMT) Calculation
-  useEffect(() => {
+  // Amortized Payment (PMT) preview -- derived entirely from the three form
+  // fields above, so it's computed during render rather than mirrored into
+  // its own effect-driven state.
+  const livePmt = (() => {
     const P = parseFloat(principal);
     const annualRate = parseFloat(ratePercent) / 100;
     const n = parseInt(months);
 
     if (isNaN(P) || P <= 0 || isNaN(annualRate) || annualRate < 0 || isNaN(n) || n <= 0) {
-      setLivePmt(0);
-      return;
+      return 0;
     }
 
     if (annualRate === 0) {
-      setLivePmt(P / n);
-      return;
+      return P / n;
     }
 
     const r = annualRate / 12;
-    const pmt = (P * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
-    setLivePmt(pmt);
-  }, [principal, ratePercent, months]);
+    return (P * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+  })();
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("en-CA", {

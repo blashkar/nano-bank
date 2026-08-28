@@ -145,7 +145,13 @@ async fn pay_credit_card(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
     Json(req): Json<CreditCardPaymentRequest>,
-) -> Result<(StatusCode, Json<crate::models::transaction::TransactionResponse>), AppError> {
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::models::transaction::TransactionResponse>,
+    ),
+    AppError,
+> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
@@ -153,7 +159,8 @@ async fn pay_credit_card(
 
     // Lock both accounts to prevent deadlocks (using lowest UUID first internally)
     let ids = vec![req.from_account_id, req.to_card_id];
-    let locked = crate::handlers::transactions::lock_accounts_cash_last(&mut tx, &ids, Uuid::nil()).await?;
+    let locked =
+        crate::handlers::transactions::lock_accounts_cash_last(&mut tx, &ids, Uuid::nil()).await?;
 
     let from = locked
         .get(&req.from_account_id)
@@ -169,11 +176,18 @@ async fn pay_credit_card(
     if to.customer_id != auth.customer_id {
         return Err(AppError::NotFound("Credit card not found".to_string()));
     }
-    if !matches!(from.account_type, AccountType::Chequing | AccountType::Savings) {
-        return Err(AppError::BadRequest("From account must be a chequing or savings account".to_string()));
+    if !matches!(
+        from.account_type,
+        AccountType::Chequing | AccountType::Savings
+    ) {
+        return Err(AppError::BadRequest(
+            "From account must be a chequing or savings account".to_string(),
+        ));
     }
     if !matches!(to.account_type, AccountType::CreditCard) {
-        return Err(AppError::BadRequest("To account must be a credit card".to_string()));
+        return Err(AppError::BadRequest(
+            "To account must be a credit card".to_string(),
+        ));
     }
 
     // Ensure status is active. `ensure_operable` distinguishes Frozen from
@@ -181,7 +195,9 @@ async fn pay_credit_card(
     // everything into AccountFrozen.
     crate::handlers::transactions::ensure_operable(from)?;
     if !matches!(to.status, crate::models::account::AccountStatus::Active) {
-        return Err(AppError::BadRequest("Credit card is not active".to_string()));
+        return Err(AppError::BadRequest(
+            "Credit card is not active".to_string(),
+        ));
     }
 
     // Validate sufficient funds
@@ -191,8 +207,8 @@ async fn pay_credit_card(
 
     // Daily withdrawal limit — a card payment draws down the funding account
     // just like a withdrawal, so it must respect the same cap.
-    let limits = crate::handlers::transactions::ensure_and_reset_limits(&mut tx, from.account_id)
-        .await?;
+    let limits =
+        crate::handlers::transactions::ensure_and_reset_limits(&mut tx, from.account_id).await?;
     if limits.daily_withdrawal_used + amount > limits.daily_withdrawal_limit {
         return Err(AppError::TransactionLimitExceeded);
     }
@@ -200,7 +216,7 @@ async fn pay_credit_card(
     // Record the transaction
     let reference = reference_number("PMT");
     let metadata = serde_json::json!({});
-    
+
     let txn_id = crate::handlers::transactions::insert_transaction(
         &mut tx,
         &reference,
@@ -293,7 +309,8 @@ async fn pay_credit_card(
         "💳 credit card payment posted persistently in database"
     );
 
-    let resp = crate::handlers::transactions::load_transaction_response(&state.pool, txn_id).await?;
+    let resp =
+        crate::handlers::transactions::load_transaction_response(&state.pool, txn_id).await?;
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
