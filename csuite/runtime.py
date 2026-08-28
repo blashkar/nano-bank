@@ -31,7 +31,10 @@ _NO_ANSWER = "(no answer)"
 _SYNTH_NUDGE = (
     "Give your final written answer now: summarize the figures you gathered from "
     "the tools this turn — grounded, with the period/window named. Do not call any "
-    "more tools; just write the answer.")
+    "more tools; just write the answer. Write out the ACTUAL findings in full "
+    "sentences — do NOT reply with a meta acknowledgment like '(analysis complete)' "
+    "or 'all steps done'; that is not an answer. If you truly gathered nothing, say "
+    "specifically what you could not find and why.")
 
 
 def _last_ai_text(state) -> str:
