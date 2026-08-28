@@ -954,10 +954,73 @@ section has a working command: `./nb up --world-model [--scenario <name>]`
 ./nb down
 ```
 
-- [ ] **Step 4: Update the PR / branch summary (no file changes)**
+- [x] **Step 4: this section** records what was live-verified today versus
+  deferred — see below.
 
-Note in the branch description (not a new doc file) which parts were
-live-verified today versus deferred per the credits caveat, so the next
-session picks up exactly at "re-verify demos 03/04/05/06/07/08/09/10 live."
+No commit needed for this task; Step 1's review found no issue to fix.
 
-No commit needed for this task unless Step 1 surfaces a real fix.
+---
+
+## Live-verification outcome (2026-08-28)
+
+Tasks 1–7's code is all written, committed to `ci-and-bringup`, and passed
+`bash -n nb` + manual exercise. A blocker discovered mid-session limited how
+much could be verified through `./nb` itself today, beyond what the
+live-verification caveat already anticipated:
+
+**New discovery, broader than the caveat anticipated:** `scripts/deploy-all.sh`
+(existing script, unmodified) always deploys the agent stack alongside the
+bank, and `agent-api` does an eager LLM probe at container startup
+(`model_factory.init_models` → `resolve_model`), which hard-crashes
+(`CrashLoopBackOff`) on today's exhausted Ollama-cloud quota (429). Since
+`deploy-all.sh` runs under `set -e` and waits on `agent-api`'s rollout, this
+means `deploy-all.sh` itself cannot complete today for **any** caller — not
+just the LLM-dependent demos, but `./nb up --world-model` and even the
+non-agentic `01-onboarding`/`02-simulator` demos, none of which need
+`agent-api` at all. This is a pre-existing characteristic of `deploy-all.sh`,
+not something `./nb` introduced or should paper over — `./nb` correctly calls
+the real script and correctly aborts when it fails.
+
+**Verified today (working around the blocker, not around `./nb`):**
+- `./nb list-demos`, `./nb down`, usage/error paths — full end-to-end via
+  `./nb` itself (Task 4).
+- `bank-api` came up fine on its own (only `agent-api` crash-loops), so it was
+  used directly: port-forwarded it manually, then ran the *exact* commands
+  `cmd_up_world_model` runs (`uv sync`, `uv run world-model realize ...`) for
+  both `hero.yaml` and `corpus-measure.yaml` — **both reconciled**
+  (`gl_sum=0.00`), confirming Task 5's realize/summarize logic against a real
+  bank.
+- Same approach for `01-onboarding` and `02-simulator`: created their venvs
+  and launched Streamlit exactly as `up_plain_streamlit_demo` does (minus the
+  blocked `deploy-all.sh` line) against the already-up `bank-api`. Both served
+  cleanly on `:8510`/`:8511` with no errors in their logs. Did not click
+  through the golden path in an actual browser (no browser-automation tool
+  used this session) — server-level verification only.
+- `cargo fmt --check` and `npm run lint` blocking-gate fixes (PR #91, #92) and
+  the CI workflow itself (PR #90) — see Task 3's outcome section above; this
+  is the most thoroughly live-verified part of the whole plan, including two
+  genuine failure-then-recovery cycles on real GitHub Actions runs.
+
+**Not verified today (blocked by `deploy-all.sh`/`agent-api`, not by choice):**
+- `./nb up --world-model` and `./nb up --demo 01-onboarding|02-simulator`
+  end-to-end through `deploy-all.sh` itself — the bring-up step fails before
+  reaching any of these demos' own logic, even though that logic was confirmed
+  correct by the workaround above.
+- `./nb up --demo` for the narrated-agent group (05, 06, 08, 09, 10) and
+  07-suite-console — same `deploy-all.sh` blocker, compounded by the LLM
+  dependency the live-verification caveat already flagged.
+- `03-manager-chat` and `04-external-agent` — same blocker; additionally,
+  `agent-api` itself (not just the LLM call within it) cannot come up at all
+  today, so even the "reaches a running page" mechanical check from Task 7
+  isn't possible until `agent-api`'s own startup probe stops crash-looping
+  (i.e., until Ollama-cloud credits reset).
+
+**Recommended next step, once credits reset:** re-run `./nb up --world-model`
+and `./nb up --demo <name>` for every demo end-to-end, unmodified — no code
+changes are expected to be needed; the blocker was entirely in already-running
+cluster state (an exhausted external quota), not in `./nb` or `deploy-all.sh`'s
+logic. If `deploy-all.sh` failing hard on a crash-looping `agent-api` (even for
+callers that don't need it) turns out to be a recurring annoyance, that's a
+separate, small follow-up to `deploy-all.sh` itself (e.g. a `SKIP_AGENT` flag
+mirroring the existing `SKIP_UI`) — out of scope for this plan and not
+attempted here.
