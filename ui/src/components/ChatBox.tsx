@@ -116,14 +116,32 @@ export default function ChatBox() {
 
   const handleResolveAction = async (actionId: string, verb: "confirm" | "cancel") => {
     setResolvingActionId(actionId);
+
+    // Clear optimistically, but remember which message it came off of so a
+    // failed confirm/cancel can put it back — otherwise the buttons vanish
+    // for good on a transient failure and the customer has no way to act on
+    // a still-pending money-movement action from the chat UI.
+    let clearedFrom: { messageId: string; pendingAction: PendingAction } | undefined;
     setMessages((prev) =>
-      prev.map((m) => (m.pendingAction?.id === actionId ? { ...m, pendingAction: undefined } : m))
+      prev.map((m) => {
+        if (m.pendingAction?.id !== actionId) return m;
+        clearedFrom = { messageId: m.id, pendingAction: m.pendingAction };
+        return { ...m, pendingAction: undefined };
+      })
     );
+
+    const restorePendingAction = () => {
+      if (!clearedFrom) return;
+      const { messageId, pendingAction } = clearedFrom;
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, pendingAction } : m)));
+    };
+
     try {
       const result = verb === "confirm" ? await confirmAgentActionAction(actionId) : await cancelAgentActionAction(actionId);
       addAssistantMessage(result.reply);
       if (!result.success) {
         toast.error(result.reply);
+        restorePendingAction();
       } else if (verb === "confirm") {
         // The confirmed action may have moved money — refresh so the account
         // summary card (a Server Component) re-fetches current balances.
@@ -132,6 +150,7 @@ export default function ChatBox() {
     } catch (error) {
       console.error(`Agent action ${verb} failed:`, error);
       toast.error(`Unable to ${verb} that action. Please try again.`);
+      restorePendingAction();
     }
     setResolvingActionId(null);
   };
