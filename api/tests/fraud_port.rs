@@ -768,15 +768,32 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .send()
         .await
         .unwrap();
-    assert!(sent.status().is_success(), "interac send: {}", sent.status());
+    assert!(
+        sent.status().is_success(),
+        "interac send: {}",
+        sent.status()
+    );
 
     // The rail hands back an `etransfer_id`; the row that was screened is the
     // `interac_hold` it wrote through `new_txn`.
+    //
+    // Scoped to the e-Transfer THIS test sent (#73, mechanism (a)). It used to
+    // reach for the newest `interac_%` row in the whole table:
+    //
+    //     ORDER BY created_at DESC LIMIT 1
+    //
+    // Any concurrently-running Interac test could be that row, leaving this one
+    // asserting about a movement it did not create — so it passed or failed on
+    // scheduling, and could pass while describing someone else's money. Since
+    // #66 the send response carries the `etransfer_id` and the row points at
+    // its own hold, so the global query buys nothing.
+    let sent_body: Value = sent.json().await.unwrap();
+    let etransfer_id = Uuid::parse_str(sent_body["etransfer_id"].as_str().unwrap()).unwrap();
     let Some(pool) = test_db().await else { return };
     let (txn_id,): (Uuid,) = sqlx::query_as(
-        "SELECT transaction_id FROM transactions \
-         WHERE transaction_type LIKE 'interac\\_%' ORDER BY created_at DESC LIMIT 1",
+        "SELECT hold_transaction_id FROM interac_etransfers WHERE etransfer_id = $1",
     )
+    .bind(etransfer_id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -790,13 +807,18 @@ async fn fraud_link_resolves_a_screened_rail_movement() {
         .unwrap_or_else(|| panic!("a screened rail movement must resolve: {link}"));
 
     // It has to be the decision the ENGINE recorded, not just a well-formed id.
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 /// A settled **AFT** movement resolves to the decision made at origination (#54).
@@ -839,7 +861,11 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
         .send()
         .await
         .unwrap();
-    assert!(credit.status().is_success(), "aft credit: {}", credit.status());
+    assert!(
+        credit.status().is_success(),
+        "aft credit: {}",
+        credit.status()
+    );
     let cv: Value = credit.json().await.unwrap();
     let entry_id = Uuid::parse_str(cv["entry_id"].as_str().expect("entry_id")).unwrap();
 
@@ -868,14 +894,20 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
             .unwrap();
     let svc = service_token(&c).await;
     let submit = c
-        .post(format!("{}/api/v1/aft/batches/{batch_id}/submit", base_url()))
+        .post(format!(
+            "{}/api/v1/aft/batches/{batch_id}/submit",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
         .unwrap();
     assert!(submit.status().is_success(), "submit: {}", submit.status());
     let settle = c
-        .post(format!("{}/api/v1/aft/network/settle/{batch_id}", base_url()))
+        .post(format!(
+            "{}/api/v1/aft/network/settle/{batch_id}",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
@@ -902,13 +934,18 @@ async fn fraud_link_resolves_a_settled_aft_movement() {
         "settlement must carry the origination decision, not a new screening"
     );
 
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 /// A captured **card purchase** resolves to the decision made at authorize (#54).
@@ -998,13 +1035,18 @@ async fn fraud_link_resolves_a_captured_card_purchase() {
         "the purchase must carry the decision from authorize, not a new screening"
     );
 
-    let Some(engine) = engine_db().await else { return };
+    let Some(engine) = engine_db().await else {
+        return;
+    };
     let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
         .bind(Uuid::parse_str(op_id).unwrap())
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,10 +1100,17 @@ async fn rail_fraud_link_resolves_an_interac_etransfer() {
         .send()
         .await
         .unwrap();
-    assert!(sent.status().is_success(), "interac send: {}", sent.status());
-    let etransfer_id =
-        Uuid::parse_str(sent.json::<Value>().await.unwrap()["etransfer_id"].as_str().unwrap())
-            .unwrap();
+    assert!(
+        sent.status().is_success(),
+        "interac send: {}",
+        sent.status()
+    );
+    let etransfer_id = Uuid::parse_str(
+        sent.json::<Value>().await.unwrap()["etransfer_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
 
     let svc = service_token(&c).await;
     let link = fraud_link_rail(&c, &svc, "interac", etransfer_id).await;
@@ -1177,7 +1226,9 @@ async fn rail_fraud_link_400_for_an_unknown_rail() {
     let c = client();
     require_stack!(&c);
     let svc = service_token(&c).await;
-    let r = fraud_link_rail(&c, &svc, "cards", Uuid::new_v4()).await;
+    // Was "cards", which #70 makes a real arm. A rail name has to be one the
+    // bank genuinely does not serve for this to assert anything.
+    let r = fraud_link_rail(&c, &svc, "cheque", Uuid::new_v4()).await;
     assert_eq!(r.status().as_u16(), 400, "unknown rail is a 400");
 }
 
@@ -1202,5 +1253,882 @@ async fn assert_engine_decision_exists(_c: &reqwest::Client, op_id: &str) {
         .fetch_one(&engine)
         .await
         .unwrap();
-    assert_eq!(seen, 1, "operation_id {op_id} must name a real engine decision");
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
+}
+
+/// Tier 2 — engine mode: a card `auth_id` resolves through the rail route (#70).
+///
+/// Cards were deferred from #66's uniform match because they are the one rail
+/// whose linkage is not a column on a row keyed by the rail id: screening
+/// happens at authorize, the money row appears at capture, and the join is the
+/// `auth_id` stamped into `transactions.metadata`. Until this arm existed, a
+/// realize run came back with ~45% of its movements unlinkable — the decisions
+/// were made, they just could not be addressed.
+///
+/// Asserted as *equal to* the transaction-keyed answer rather than merely
+/// non-null: two routes disagreeing about one money row is worse than one of
+/// them not existing, because a label attaches to whichever the caller asked.
+#[tokio::test]
+async fn rail_fraud_link_resolves_a_captured_card_by_auth_id() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+    let card = c
+        .post(format!("{}/api/v1/accounts", base_url()))
+        .bearer_auth(&token)
+        .json(&json!({ "account_type": "credit_card" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(card.status().is_success(), "create card: {}", card.status());
+    let cv: Value = card.json().await.unwrap();
+    let card_id = Uuid::parse_str(cv["account_id"].as_str().unwrap()).unwrap();
+
+    let svc = service_token(&c).await;
+    let auth = c
+        .post(format!("{}/api/v1/cards/authorize", base_url()))
+        .bearer_auth(&svc)
+        .json(&json!({ "account_id": card_id, "amount": 61.25, "merchant": "Rail Cards Co" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(auth.status().is_success(), "authorize: {}", auth.status());
+    let av: Value = auth.json().await.unwrap();
+    assert_eq!(av["status"], "approved", "authorize should approve: {av}");
+    let auth_id = Uuid::parse_str(av["auth_id"].as_str().expect("auth_id")).unwrap();
+
+    // Before capture there is no money row, so there is nothing to resolve —
+    // the same state an unsettled AFT entry is in, and it must 404 rather than
+    // 500 or answer nulls.
+    let before = fraud_link_rail(&c, &svc, "cards", auth_id).await;
+    assert_eq!(
+        before.status().as_u16(),
+        404,
+        "an authorized-but-uncaptured card has no money row yet"
+    );
+
+    let cap = c
+        .post(format!("{}/api/v1/cards/capture", base_url()))
+        .bearer_auth(&svc)
+        .json(&json!({ "auth_id": auth_id }))
+        .send()
+        .await
+        .unwrap();
+    assert!(cap.status().is_success(), "capture: {}", cap.status());
+    let cvj: Value = cap.json().await.unwrap();
+    let txn_id = Uuid::parse_str(cvj["transaction_id"].as_str().expect("transaction_id")).unwrap();
+
+    let by_rail: Value = fraud_link_rail(&c, &svc, "cards", auth_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let op_id = by_rail["operation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a captured card must resolve: {by_rail}"));
+
+    let by_txn: Value = fraud_link(&c, &svc, txn_id).await.json().await.unwrap();
+    assert_eq!(by_rail, by_txn, "the two entry points must not disagree");
+
+    // And it names a decision the engine actually recorded.
+    let Some(engine) = engine_db().await else {
+        return;
+    };
+    let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM decisions WHERE operation_id = $1")
+        .bind(Uuid::parse_str(op_id).unwrap())
+        .fetch_one(&engine)
+        .await
+        .unwrap();
+    assert_eq!(
+        seen, 1,
+        "operation_id {op_id} must name a real engine decision"
+    );
+}
+
+/// The cards arm sits on the service plane like every other (#46).
+#[tokio::test]
+async fn rail_fraud_link_cards_refuses_a_customer_token() {
+    let c = client();
+    require_stack!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, format!("dev-{}", Uuid::new_v4()).as_str()).await;
+
+    let r = fraud_link_rail(&c, &token, "cards", Uuid::new_v4()).await;
+    assert!(
+        matches!(r.status().as_u16(), 401 | 403),
+        "a customer token must not reach a card linkage: {}",
+        r.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Held movements: parking, and what a verdict does to a parked movement (#74)
+// ---------------------------------------------------------------------------
+//
+// These are the tests that say the engine can *act*. Before them a hold was a
+// dead end: the bank declined, the money went home, and a reviewer clearing the
+// case changed nothing for the customer.
+//
+// Every one of them asserts on **money**, not on the poll response, wherever
+// money is the point. A poll that says "executed" while the balance is
+// unchanged is exactly the failure worth catching, and a response-only
+// assertion cannot see it.
+
+/// Ask the bank what became of a held movement.
+async fn poll_review(c: &reqwest::Client, token: &str, review: Uuid) -> Value {
+    let r = c
+        .get(format!("{}/api/v1/reviews/{}", base_url(), review))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "review poll");
+    r.json().await.unwrap()
+}
+
+async fn balance_of(c: &reqwest::Client, token: &str, account: Uuid) -> f64 {
+    let v: Value = c
+        .get(format!("{}/api/v1/accounts/{}", base_url(), account))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    v["balance"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| v["balance"].as_f64())
+        .unwrap_or_else(|| panic!("no balance in {v}"))
+}
+
+/// Park a held transfer, deterministically.
+///
+/// The hold comes from the `account_watch` list — rules_v1's
+/// `watched_destination_account`, a hard-rule gate whose description is exactly
+/// this scenario: *"Destination account under active investigation (suspected
+/// mule). Hold rather than block: analysts decide, and the sender may be a
+/// victim we need to talk to."* A parked movement is what "analysts decide"
+/// requires.
+///
+/// It is driven by an analyst action the test controls, which is the point.
+/// An earlier version of this fixture sent $1,500 and hoped policy_v3's
+/// `first_payment_new_payee_above_baseline` would catch it. That rule needs
+/// `amount_above_p90`, which is relative to *this customer's own* history — a
+/// fresh account has none, so nothing held, the fixture skipped, and six tests
+/// reported `ok` while asserting nothing whatsoever. Never again: this returns
+/// a park or it fails.
+///
+/// Returns `(review_id, from, to, token, list_entry)`; the caller revokes the
+/// entry so repeated runs stay independent.
+async fn park_a_held_transfer(c: &reqwest::Client) -> Option<(Uuid, Uuid, Uuid, String, Value)> {
+    // Bounded retry, because a miss here has an innocent cause worth
+    // distinguishing from a bug. At $120 the movement is below
+    // `fail_closed_above`, so when this suite's ~24 concurrent tests burst at a
+    // single engine and one screening call exceeds its 150ms budget, the gate
+    // fails OPEN and the transfer posts. That is the configured behaviour, not
+    // a parking defect — the pre-existing `engine_mode_blocked_device_declines`
+    // flakes the same way for the same reason.
+    //
+    // Three attempts, each with a fresh customer and destination. If every one
+    // posts, that is a real failure and the assertion says what it saw.
+    let mut last = String::new();
+    for _ in 0..3 {
+        let (_, email) = create_customer(c).await;
+        let token = login_with_device(c, &email, &format!("dev-{}", Uuid::new_v4())).await;
+        let from = create_account(c, &token).await;
+        let to = create_account(c, &token).await;
+        seed_deposit(c, &token, from, 5000.0).await?;
+
+        // The analyst flags the destination. `payee` is the destination account
+        // UUID for an internal transfer (the counterparty handle for the
+        // external rails), so this is the subject the gate keys on.
+        let entry = engine_list_add(c, "account_watch", &to.to_string()).await;
+
+        let resp = transfer(c, &token, from, to, 120.0).await;
+        let status = resp.status().as_u16();
+        let body: Value = resp.json().await.unwrap();
+        if status != 202 {
+            last = format!("{status}: {body}");
+            engine_list_revoke(c, &entry).await;
+            continue;
+        }
+        let review = Uuid::parse_str(body["review_id"].as_str().unwrap()).unwrap();
+        assert_eq!(body["status"], "held", "a fresh park is held: {body}");
+        assert!(
+            body["transaction_id"].is_null(),
+            "nothing has posted yet: {body}"
+        );
+        return Some((review, from, to, token, entry));
+    }
+    panic!("a watched destination never parked in three attempts; last was {last}");
+}
+
+/// Resolve the engine case behind a parked movement, and return whether we
+/// could (the engine DB is optional in this harness).
+async fn resolve_case_for(c: &reqwest::Client, review: Uuid, verdict: &str) -> bool {
+    let Some(bank) = test_db().await else {
+        return false;
+    };
+    let (op_id,): (Uuid,) =
+        sqlx::query_as("SELECT operation_id FROM pending_reviews WHERE review_id = $1")
+            .bind(review)
+            .fetch_one(&bank)
+            .await
+            .unwrap();
+
+    let Some(engine) = engine_db().await else {
+        return false;
+    };
+    let case: Option<(Uuid,)> = sqlx::query_as("SELECT case_id FROM cases WHERE operation_id = $1")
+        .bind(op_id)
+        .fetch_optional(&engine)
+        .await
+        .unwrap();
+    let Some((case_id,)) = case else {
+        panic!("a held movement must have opened a case (operation {op_id})");
+    };
+
+    let r = c
+        .post(format!(
+            "{}/admin/v1/cases/{}/resolution",
+            engine_url(),
+            case_id
+        ))
+        .bearer_auth(admin_token())
+        .header("X-Actor", "fraud-port-e2e")
+        .json(&json!({ "verdict": verdict, "note": "fraud_port e2e" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 201, "case resolution");
+    true
+}
+
+/// Tier 2 — the whole point: a held transfer PARKS rather than declining.
+///
+/// A 403 here is the old dead end. The money must still be in the sending
+/// account (nothing has moved) and the review must be addressable.
+#[tokio::test]
+async fn engine_mode_a_held_transfer_parks_instead_of_declining() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, from, _to, token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+
+    // Parked, not posted: the sender still has every cent.
+    assert_eq!(
+        balance_of(&c, &token, from).await,
+        5000.0,
+        "a parked movement must not have moved money"
+    );
+
+    let v = poll_review(&c, &token, review).await;
+    assert_eq!(v["status"], "held", "still waiting on a reviewer: {v}");
+    assert!(v["transaction_id"].is_null());
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// Tier 2 — a cleared case RELEASES the money. This is the assertion the whole
+/// mechanism exists for, and it is made against the ledger, not the response.
+#[tokio::test]
+async fn engine_mode_a_cleared_case_executes_the_held_movement() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, from, to, token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+    if !resolve_case_for(&c, review, "cleared").await {
+        eprintln!("SKIP: no engine/bank DB access to resolve the case");
+        return;
+    }
+
+    let v = poll_review(&c, &token, review).await;
+    assert_eq!(v["status"], "executed", "a cleared case must release: {v}");
+    let txn = v["transaction_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("executed must carry its transaction: {v}"));
+
+    // The money actually moved. A poll that says "executed" over an unchanged
+    // balance is the failure this asserts against.
+    assert_eq!(
+        balance_of(&c, &token, to).await,
+        120.0,
+        "the recipient must have been credited by the released transfer"
+    );
+    assert!(
+        balance_of(&c, &token, from).await < 5000.0,
+        "the sender must have been debited"
+    );
+    engine_list_revoke(&c, &watch).await;
+
+    // And it carries the decision that held it, so the audit trail survives the
+    // detour through review.
+    let svc = service_token(&c).await;
+    let link = fraud_link(&c, &svc, Uuid::parse_str(txn).unwrap()).await;
+    assert_eq!(link.status().as_u16(), 200);
+    let link: Value = link.json().await.unwrap();
+    let op_id = link["operation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a released movement keeps its linkage: {link}"));
+    assert_engine_decision_exists(&c, op_id).await;
+}
+
+/// Tier 2 — `confirmed_fraud` must NEVER execute. The mirror of the test above,
+/// and the one that matters more: releasing on the wrong verdict pays a
+/// fraudster.
+#[tokio::test]
+async fn engine_mode_confirmed_fraud_never_executes_the_held_movement() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, from, to, token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+    if !resolve_case_for(&c, review, "confirmed_fraud").await {
+        eprintln!("SKIP: no engine/bank DB access to resolve the case");
+        return;
+    }
+
+    let v = poll_review(&c, &token, review).await;
+    assert_eq!(v["status"], "refused", "confirmed fraud must refuse: {v}");
+    assert!(
+        v["transaction_id"].is_null(),
+        "a refused review must post nothing: {v}"
+    );
+    assert_eq!(
+        balance_of(&c, &token, from).await,
+        5000.0,
+        "the sender must be untouched"
+    );
+    assert_eq!(
+        balance_of(&c, &token, to).await,
+        0.0,
+        "the recipient must never have been credited"
+    );
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// Tier 2 — an OPEN case is not a release.
+///
+/// The engine reports "no case" and "a case nobody has ruled on" as different
+/// things (fraud engine #31) precisely so this cannot be collapsed. A bank that
+/// treated `open` as clearance would release every held movement the instant it
+/// was polled — which is worse than never parking at all, because it would look
+/// like review was happening.
+#[tokio::test]
+async fn engine_mode_an_unreviewed_case_is_not_a_release() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, from, to, token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+
+    // Poll repeatedly WITHOUT resolving the case. Every one must leave it held.
+    for attempt in 0..3 {
+        let v = poll_review(&c, &token, review).await;
+        assert_eq!(
+            v["status"], "held",
+            "poll {attempt} released an unreviewed movement: {v}"
+        );
+    }
+    assert_eq!(balance_of(&c, &token, from).await, 5000.0);
+    assert_eq!(balance_of(&c, &token, to).await, 0.0);
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// Tier 2 — another customer's review is a 404, not a 403.
+///
+/// Same rule the rest of the bank follows: a stranger must not be able to
+/// confirm that a review exists, which a 403 would do.
+#[tokio::test]
+async fn engine_mode_a_review_is_invisible_to_another_customer() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, _from, _to, _token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+
+    let (_, other_email) = create_customer(&c).await;
+    let other = login_with_device(&c, &other_email, &format!("dev-{}", Uuid::new_v4())).await;
+    let r = c
+        .get(format!("{}/api/v1/reviews/{}", base_url(), review))
+        .bearer_auth(&other)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        404,
+        "another customer's review is a 404"
+    );
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// Tier 2 — the second rail parks too.
+///
+/// e-Transfer is where the corpus's typologies live (ATO drain, mule fan-in,
+/// the daily drip), so a hold that only parked internal transfers would miss
+/// most of what the engine actually stops. Held on the recipient handle, which
+/// is what `payee` resolves to on the external rails.
+#[tokio::test]
+async fn engine_mode_a_held_etransfer_parks_instead_of_declining() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (_, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, &format!("dev-{}", Uuid::new_v4())).await;
+    let account = create_account(&c, &token).await;
+    if seed_deposit(&c, &token, account, 5000.0).await.is_none() {
+        return;
+    }
+
+    // Retried for the same reason `park_a_held_transfer` retries: at $120 a
+    // screening timeout under concurrent load fails OPEN and the send goes
+    // through. Three attempts, then a real failure.
+    let mut watch = Value::Null;
+    let mut body = Value::Null;
+    let mut ok = false;
+    let mut last = String::new();
+    for _ in 0..3 {
+        let handle = format!("held-{}@example.com", Uuid::new_v4());
+        watch = engine_list_add(&c, "account_watch", &handle).await;
+        let resp = c
+            .post(format!("{}/api/v1/interac/etransfers", base_url()))
+            .bearer_auth(&token)
+            .json(&json!({
+                "from_account_id": account,
+                "amount": 120.00,
+                "recipient_handle_type": "email",
+                "recipient_handle_value": handle,
+                "security_question": "q",
+                "security_answer": "a",
+                "idempotency_key": format!("held-{}", Uuid::new_v4()),
+            }))
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        body = resp.json().await.unwrap();
+        if status == 202 {
+            ok = true;
+            break;
+        }
+        last = format!("{status}: {body}");
+        engine_list_revoke(&c, &watch).await;
+    }
+    assert!(
+        ok,
+        "a watched recipient never parked the e-Transfer in three attempts; last was {last}"
+    );
+    assert_eq!(body["rail"], "interac_etransfer", "{body}");
+    assert_eq!(body["status"], "held", "{body}");
+
+    // No e-Transfer was created and no money moved — a park is not a send.
+    assert_eq!(
+        balance_of(&c, &token, account).await,
+        5000.0,
+        "a parked e-Transfer must not have moved money"
+    );
+    engine_list_revoke(&c, &watch).await;
+}
+
+// The rails that do NOT park (cards, AFT, Lynx, deposit, withdrawal) have no
+// test of their own here, deliberately.
+//
+// A first attempt asserted that a card authorization returns something other
+// than 202 and creates no `pending_reviews` row. Both hold trivially: cards
+// require a `credit_card` account, so an authorization against the chequing
+// account these fixtures create is refused before screening is even reached.
+// The test could not fail, whatever the code did.
+//
+// What actually guards those call sites is their EXISTING tests —
+// `fraud_link_resolves_a_captured_card_purchase`, `rail_fraud_link_resolves_a_lynx_wire`,
+// `rail_fraud_link_resolves_an_aft_entry` and the interac/AFT linkage tests all
+// drive `Screened::into_refusal`'s success path, and all had to keep passing
+// unchanged for this change to land.
+//
+// Known gap, stated rather than faked: `into_refusal`'s *refusal* path — a
+// held card collapsing back to `TRANSACTION_UNDER_REVIEW` — is not covered.
+// Forcing a hold on the card rail needs a rule that fires without a payee
+// subject (cards carry no `to_account_id`), which is a fixture worth building
+// when something depends on it.
+
+// ---------------------------------------------------------------------------
+// The reclaim/idempotency path (review on #75)
+// ---------------------------------------------------------------------------
+//
+// The lease that makes a crashed release recoverable is also the thing that can
+// pay twice, tell a customer "refused" about money that moved, or let one
+// customer write another's row. Each of these drives the crash window directly
+// rather than hoping to observe it.
+
+/// Force the window a crashed release leaves behind: claimed, nothing recorded,
+/// and old enough to reclaim.
+async fn strand_release(review: Uuid) {
+    let Some(pool) = test_db().await else { return };
+    sqlx::query(
+        "UPDATE pending_reviews SET status = 'executing', transaction_id = NULL, \
+         claimed_at = now() - interval '10 minutes' WHERE review_id = $1",
+    )
+    .bind(review)
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
+async fn review_row(review: Uuid) -> Option<(String, Option<Uuid>)> {
+    let pool = test_db().await?;
+    sqlx::query_as("SELECT status, transaction_id FROM pending_reviews WHERE review_id = $1")
+        .bind(review)
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+}
+
+/// A handler must not write a row it may not read.
+///
+/// `reclaim_stranded` runs *before* the customer-scoped load, so without the
+/// caller's scope any authenticated customer holding a stranger's review id
+/// flips that stranger's stranded claim back to `held`. The read then 404s —
+/// which looks safe — but the write already landed.
+#[tokio::test]
+async fn engine_mode_a_stranger_cannot_reclaim_another_customers_review() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, _from, _to, _token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+    strand_release(review).await;
+
+    let (_, other_email) = create_customer(&c).await;
+    let other = login_with_device(&c, &other_email, &format!("dev-{}", Uuid::new_v4())).await;
+    let r = c
+        .get(format!("{}/api/v1/reviews/{}", base_url(), review))
+        .bearer_auth(&other)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404, "a stranger's review is a 404");
+
+    // The 404 is not the assertion that matters — this is.
+    let (status, _) = review_row(review).await.expect("the review still exists");
+    assert_eq!(
+        status, "executing",
+        "a stranger's poll must not have reclaimed the row"
+    );
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// A reclaimed release must adopt the money that already moved, not send it
+/// again — including when the caller supplied no idempotency key of their own.
+///
+/// This is the window: post the money, crash before recording `executed`, let
+/// the lease age out, poll again. Both uniqueness guards skip NULL, so before
+/// the park derived a key this re-executed and paid a second time.
+#[tokio::test]
+async fn engine_mode_a_reclaimed_release_does_not_pay_twice() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    // `transfer()` sends no idempotency_key — the keyless case, deliberately.
+    let Some((review, from, to, token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+    if !resolve_case_for(&c, review, "cleared").await {
+        eprintln!("SKIP: no engine/bank DB access to resolve the case");
+        return;
+    }
+
+    let first = poll_review(&c, &token, review).await;
+    assert_eq!(
+        first["status"], "executed",
+        "the first release must post: {first}"
+    );
+    let credited = balance_of(&c, &token, to).await;
+    assert_eq!(credited, 120.0, "recipient credited once");
+
+    // Crash window, then a poll that reclaims and re-releases.
+    strand_release(review).await;
+    let second = poll_review(&c, &token, review).await;
+
+    assert_eq!(
+        balance_of(&c, &token, to).await,
+        credited,
+        "a reclaimed release paid the recipient a SECOND time: {second}"
+    );
+    assert_eq!(
+        balance_of(&c, &token, from).await,
+        5000.0 - 120.0 - 1.50,
+        "the sender was debited twice"
+    );
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// A retry of a held request must not reach the engine again.
+///
+/// The posted-movement replay check cannot see a parked movement — nothing has
+/// posted — so without the park short-circuit the retry screens afresh. #28 set
+/// the rule that a replay short-circuits *before* the engine is called.
+///
+/// Asserted on the engine's **replay counter**, not on the decision count. The
+/// engine dedupes by idempotency key, so a second screening returns the
+/// original decision and writes no second row — a decision-count assertion
+/// passes even with the short-circuit removed, which is how the first version
+/// of this test survived its probe. What actually leaks is the round trip
+/// itself: the assessment runs before the dedupe, so the velocity windows count
+/// one customer intent twice. That is precisely why the rails' own replay
+/// checks sit ahead of screening.
+#[tokio::test]
+async fn engine_mode_a_retry_while_held_does_not_mint_a_second_decision() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let (customer_id, email) = create_customer(&c).await;
+    let token = login_with_device(&c, &email, &format!("dev-{}", Uuid::new_v4())).await;
+    let from = create_account(&c, &token).await;
+    let to = create_account(&c, &token).await;
+    if seed_deposit(&c, &token, from, 5000.0).await.is_none() {
+        return;
+    }
+    let watch = engine_list_add(&c, "account_watch", &to.to_string()).await;
+    let key = format!("retry-{}", Uuid::new_v4());
+
+    let send = |k: String| {
+        let c = c.clone();
+        let token = token.clone();
+        async move {
+            c.post(format!("{}/api/v1/transactions/transfer", base_url()))
+                .bearer_auth(&token)
+                .json(&json!({
+                    "from_account_id": from, "to_account_id": to, "amount": 120.0,
+                    "description": "retry test", "idempotency_key": k,
+                }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let replays_before = engine_replays(&c).await;
+
+    let first = send(key.clone()).await;
+    if first.status().as_u16() != 202 {
+        eprintln!("SKIP: screening failed open, so nothing parked");
+        engine_list_revoke(&c, &watch).await;
+        return;
+    }
+    let first: Value = first.json().await.unwrap();
+
+    let retry = send(key.clone()).await;
+    assert_eq!(retry.status().as_u16(), 202, "a retry must return the park");
+    let retry: Value = retry.json().await.unwrap();
+    assert_eq!(
+        retry["review_id"], first["review_id"],
+        "the retry must adopt the same review, not open a second"
+    );
+
+    // The number that matters: the engine was never asked a second time.
+    assert_eq!(
+        engine_replays(&c).await,
+        replays_before,
+        "the retry reached the engine — a replay was served, so velocity counted \
+         this customer intent twice"
+    );
+
+    // And still exactly one decision, scoped to `transfer` (the seed deposit is
+    // screened too, and counting it made an earlier version read 2 for correct
+    // code).
+    let Some(engine) = engine_db().await else {
+        return;
+    };
+    let decisions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM decisions WHERE customer_id = $1 AND transaction_type = 'transfer'",
+    )
+    .bind(customer_id)
+    .fetch_one(&engine)
+    .await
+    .unwrap();
+    assert_eq!(decisions, 1, "one intent, one decision");
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// Releasing a movement still produces its fraud label.
+///
+/// The bank used to POST a `released_after_review` event, which the engine
+/// rejected on every call — `OutcomeEventType` is a closed set — silently,
+/// because the send was fire-and-forget. Deleting it loses nothing, and this
+/// asserts that: the label comes from the engine's own case resolution.
+#[tokio::test]
+async fn engine_mode_a_released_movement_still_carries_its_label() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, _from, _to, token, watch)) = park_a_held_transfer(&c).await else {
+        return;
+    };
+    if !resolve_case_for(&c, review, "cleared").await {
+        eprintln!("SKIP: no engine/bank DB access to resolve the case");
+        return;
+    }
+    let released = poll_review(&c, &token, review).await;
+    assert_eq!(released["status"], "executed", "{released}");
+
+    let Some(bank) = test_db().await else { return };
+    let (op_id,): (Uuid,) =
+        sqlx::query_as("SELECT operation_id FROM pending_reviews WHERE review_id = $1")
+            .bind(review)
+            .fetch_one(&bank)
+            .await
+            .unwrap();
+
+    let Some(engine) = engine_db().await else {
+        return;
+    };
+    let labelled: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM outcome_events \
+         WHERE operation_id = $1 AND event_type = 'case_cleared'",
+    )
+    .bind(op_id)
+    .fetch_one(&engine)
+    .await
+    .unwrap();
+    assert_eq!(
+        labelled, 1,
+        "the released movement must carry a case_cleared label from the engine's own resolution"
+    );
+    engine_list_revoke(&c, &watch).await;
+}
+
+/// Idempotent replays the engine has served — the observable that says a caller
+/// reached it when it should have short-circuited.
+async fn engine_replays(c: &reqwest::Client) -> f64 {
+    let text = c
+        .get(format!("{}/metrics", engine_url()))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    text.lines()
+        .find(|l| l.starts_with("fraud_decision_replays_total "))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0)
+}
+
+/// Park a held e-Transfer and return `(review_id, account, token, watch_entry)`.
+async fn park_a_held_etransfer(c: &reqwest::Client) -> Option<(Uuid, Uuid, String, Value)> {
+    let (_, email) = create_customer(c).await;
+    let token = login_with_device(c, &email, &format!("dev-{}", Uuid::new_v4())).await;
+    let account = create_account(c, &token).await;
+    seed_deposit(c, &token, account, 5000.0).await?;
+
+    // Retried because at $120 a screening timeout under concurrent load fails
+    // OPEN and the send goes through, which is indistinguishable here from a
+    // policy miss. Raising the amount above `fail_closed_above` to force a
+    // retryable 503 instead was measured and made things WORSE: each retry adds
+    // a customer, a deposit and a send, so the extra traffic timed out other
+    // tests' screening. Three attempts at $120 is the cheaper trade.
+    for _ in 0..3 {
+        let handle = format!("reclaim-{}@example.com", Uuid::new_v4());
+        let watch = engine_list_add(c, "account_watch", &handle).await;
+        let resp = c
+            .post(format!("{}/api/v1/interac/etransfers", base_url()))
+            .bearer_auth(&token)
+            .json(&json!({
+                "from_account_id": account,
+                "amount": 120.00,
+                "recipient_handle_type": "email",
+                "recipient_handle_value": handle,
+                "security_question": "q",
+                "security_answer": "a",
+            }))
+            .send()
+            .await
+            .unwrap();
+        if resp.status().as_u16() == 202 {
+            let body: Value = resp.json().await.unwrap();
+            let review = Uuid::parse_str(body["review_id"].as_str().unwrap()).unwrap();
+            return Some((review, account, token, watch));
+        }
+        engine_list_revoke(c, &watch).await;
+    }
+    panic!("a watched recipient never parked an e-Transfer in three attempts");
+}
+
+/// A reclaimed e-Transfer release must report what actually happened.
+///
+/// The transfer rail has adopted the winner on a unique violation since #65;
+/// interac mapped the same violation to a bare `Conflict`. So a release that
+/// crashed after sending, then reclaimed, threw — and the review was recorded
+/// `refused` ("cleared, but could not be completed") with no `transaction_id`,
+/// while the money had already gone. Telling a customer their transfer was
+/// refused after sending it is the worst thing this rail can do.
+#[tokio::test]
+async fn engine_mode_a_reclaimed_etransfer_release_reports_executed_not_refused() {
+    let c = client();
+    require_stack!(&c);
+    require_fraud_e2e!(&c);
+    let Some((review, account, token, watch)) = park_a_held_etransfer(&c).await else {
+        return;
+    };
+    if !resolve_case_for(&c, review, "cleared").await {
+        eprintln!("SKIP: no engine/bank DB access to resolve the case");
+        return;
+    }
+
+    let first = poll_review(&c, &token, review).await;
+    assert_eq!(
+        first["status"], "executed",
+        "the first release must send: {first}"
+    );
+    let after_send = balance_of(&c, &token, account).await;
+
+    // Crash after sending, before recording it. The reclaim re-runs the send.
+    strand_release(review).await;
+    let second = poll_review(&c, &token, review).await;
+
+    assert_eq!(
+        second["status"], "executed",
+        "a reclaimed send of an already-sent e-Transfer must adopt it, not report refused: {second}"
+    );
+    assert!(
+        !second["transaction_id"].is_null(),
+        "an adopted release must still name its money row: {second}"
+    );
+    assert_eq!(
+        balance_of(&c, &token, account).await,
+        after_send,
+        "the reclaimed release sent the money a second time"
+    );
+
+    // And exactly one e-Transfer exists for it.
+    if let Some(pool) = test_db().await {
+        let sent: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM interac_etransfers e JOIN pending_reviews p \
+             ON p.review_id = $1 WHERE e.sender_account_id = $2",
+        )
+        .bind(review)
+        .bind(account)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(sent, 1, "exactly one e-Transfer must exist for this review");
+    }
+    engine_list_revoke(&c, &watch).await;
 }

@@ -8,6 +8,18 @@ A Next.js (App Router) frontend for the nano-bank API.
 - `/auth/signup`, `/auth/signin` — customer registration and login forms.
 - `/dashboard` — protected; requires a valid session, otherwise redirects to `/auth/signin`. Shows a
   skeleton (`loading.tsx`) while the session check is in flight.
+- `/dashboard/accounts` — list of the customer's accounts; `/accounts/create` opens the account
+  creation form.
+- `/dashboard/accounts/[id]` — single account's detail and balance, plus its most recent
+  transactions (linking out to the full history page and to individual transactions).
+- `/dashboard/accounts/[id]/transactions` — full, paginated transaction history for one account
+  (10/25/50/100 per page) with a debounced description search box.
+- `/dashboard/accounts/transfer` — move money between two of the customer's own accounts.
+- `/dashboard/accounts/deposit` — deposit money into one of the customer's own accounts.
+- `/dashboard/transactions/[id]` — entry-level detail for a single transaction; the back link
+  returns to the originating account's transactions page when reached via `?account=`.
+- `/dashboard/credit` — list of the customer's credit card accounts; `/credit/[id]` shows one
+  card's detail.
 - `/privacy`, `/terms` — static Privacy Policy / Terms of Service pages.
 - `/health` — pings the API's `/health` endpoint.
 

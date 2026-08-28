@@ -411,7 +411,13 @@ async fn approve_approval(
             screen_scope: Some("stepup"),
         },
     )
-    .await;
+    .await
+    // The step-up plane cannot park a fraud hold: this ask is ALREADY parked,
+    // in `pending_approvals`, awaiting this very customer. A second park would
+    // give one movement two homes, two expiries and two release paths. A hold
+    // here refuses exactly as it did before parking existed, and the revert
+    // below keeps the ask actionable.
+    .and_then(crate::handlers::transactions::Executed::posted_or_refuse);
 
     match result {
         Ok(resp) => {

@@ -200,8 +200,11 @@ def build_mcp(deps: Deps) -> FastMCP:
         durably for the CXO and, for high/urgent, best-effort escalates. Benign,
         non-money — not confirm-gated."""
         from . import cx_issue_action
-        return cx_issue_action.file_and_maybe_escalate(
-            deps.db, current_customer(), deps.cxo_url, category, severity, summary, detail)
+        try:
+            return cx_issue_action.file_and_maybe_escalate(
+                deps.db, current_customer(), deps.cxo_url, category, severity, summary, detail)
+        except cx_issue_action.CxIssueError as e:
+            return {"error": str(e)}
 
     return mcp
 

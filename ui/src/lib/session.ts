@@ -1,11 +1,15 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { API_BASE_URL } from "@/lib/config";
 
 export interface CustomerProfile {
   first_name: string;
   last_name: string;
   email: string;
+  phone_number?: string;
+  date_of_birth?: string;
+  sin?: string | null;
 }
 
 export interface Session {
@@ -22,8 +26,9 @@ export type SessionVerification =
   | { status: "unauthorized" }
   | { status: "error" };
 
-/** Verifies an access token against the API. */
-export async function verifySession(accessToken: string | undefined): Promise<SessionVerification> {
+/** Verifies an access token against the API. Caches the result per-request
+ * to prevent duplicate network calls during the same render pass. */
+export const verifySession = cache(async (accessToken: string | undefined): Promise<SessionVerification> => {
   if (!accessToken) return { status: "unauthorized" };
 
   try {
@@ -43,7 +48,7 @@ export async function verifySession(accessToken: string | undefined): Promise<Se
     console.error("Failed to verify session:", error);
     return { status: "error" };
   }
-}
+});
 
 /** For protected Server Components: verifies the session cookie and returns the
  * token and profile. An infra error (network/5xx from the profile check) throws
@@ -60,13 +65,13 @@ export async function requireSession(): Promise<Session> {
   const accessToken = cookieStore.get("access_token")?.value;
   const verification = await verifySession(accessToken);
 
+  if (verification.status === "valid") {
+    return { accessToken: accessToken!, profile: verification.profile };
+  }
+
   if (verification.status === "error") {
     throw new Error("Unable to verify session: the API is unreachable or returned an error.");
   }
 
-  if (verification.status === "unauthorized") {
-    redirect("/api/auth/refresh?next=/dashboard");
-  }
-
-  return { accessToken: accessToken!, profile: verification.profile };
+  redirect("/api/auth/refresh?next=/dashboard");
 }

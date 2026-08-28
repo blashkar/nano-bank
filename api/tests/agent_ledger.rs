@@ -50,7 +50,10 @@ async fn records_a_cto_action_and_returns_seq_and_hash() {
     assert!(r.status().is_success(), "status {}", r.status());
     let body: Value = r.json().await.unwrap();
     assert!(body["seq"].as_i64().is_some(), "seq missing: {body}");
-    assert!(body["entry_hash"].as_str().is_some(), "entry_hash missing: {body}");
+    assert!(
+        body["entry_hash"].as_str().is_some(),
+        "entry_hash missing: {body}"
+    );
 }
 
 #[tokio::test]

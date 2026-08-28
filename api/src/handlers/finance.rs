@@ -49,7 +49,11 @@ async fn post_balanced(
 }
 
 fn line(account: Gl, direction: Direction, amount: Decimal) -> EntryLine {
-    EntryLine { account, direction, amount }
+    EntryLine {
+        account,
+        direction,
+        amount,
+    }
 }
 
 /// The single "is this a **real customer** account?" predicate, shared by every
@@ -106,7 +110,9 @@ async fn external_cash_id(state: &AppState) -> Result<Uuid, AppError> {
     )
     .fetch_optional(&state.pool)
     .await?
-    .ok_or_else(|| AppError::ServiceUnavailable("external cash account not initialised".to_string()))
+    .ok_or_else(|| {
+        AppError::ServiceUnavailable("external cash account not initialised".to_string())
+    })
 }
 
 /// Charge the flat outgoing e-transfer fee to the sender's deposit account and
@@ -151,7 +157,16 @@ pub(crate) async fn charge_etransfer_fee(
     .await?;
     // Customer debit (balance down); EXTERNAL_CASH credit.
     zero_available(tx, sender_account_id).await?;
-    post_two_legged(tx, txn_id, sender_account_id, "debit", cash_id, "credit", fee).await?;
+    post_two_legged(
+        tx,
+        txn_id,
+        sender_account_id,
+        "debit",
+        cash_id,
+        "credit",
+        fee,
+    )
+    .await?;
     recompute_available(tx, sender_account_id).await?;
     post_balanced(
         state,
@@ -269,20 +284,38 @@ async fn accrue(
         "INSERT INTO accrual_runs (accrual_date, economic_event_id, expense_total, income_total) \
          VALUES ($1,$2,$3,$4)",
     )
-    .bind(req.as_of).bind(event_id).bind(expense_total).bind(income_total)
-    .execute(&mut *tx).await?;
+    .bind(req.as_of)
+    .bind(event_id)
+    .bind(expense_total)
+    .bind(income_total)
+    .execute(&mut *tx)
+    .await?;
 
     // One atomic GL document for both sides, before commit.
     let mut lines = Vec::new();
     if expense_total > Decimal::ZERO {
         lines.push(line(Gl::InterestExpense, Direction::Debit, expense_total));
-        lines.push(line(Gl::AccruedInterestPayable, Direction::Credit, expense_total));
+        lines.push(line(
+            Gl::AccruedInterestPayable,
+            Direction::Credit,
+            expense_total,
+        ));
     }
     if income_total > Decimal::ZERO {
-        lines.push(line(Gl::AccruedInterestReceivable, Direction::Debit, income_total));
+        lines.push(line(
+            Gl::AccruedInterestReceivable,
+            Direction::Debit,
+            income_total,
+        ));
         lines.push(line(Gl::InterestIncome, Direction::Credit, income_total));
     }
-    post_balanced(&state, &format!("ACCR-{}", req.as_of), "Daily interest accrual", lines).await?;
+    post_balanced(
+        &state,
+        &format!("ACCR-{}", req.as_of),
+        "Daily interest accrual",
+        lines,
+    )
+    .await?;
 
     tx.commit().await?;
 
@@ -368,7 +401,8 @@ async fn capitalise(
            AND ia.accrual_date >= $1 AND ia.accrual_date < $2 \
          GROUP BY ia.account_id, a.customer_id",
     )
-    .bind(start).bind(end)
+    .bind(start)
+    .bind(end)
     .fetch_all(&mut *tx)
     .await?;
 
@@ -382,11 +416,24 @@ async fn capitalise(
              VALUES ($1,'interest',$2,'Interest capitalisation','completed',$3, \
                      CURRENT_TIMESTAMP,'deposit','deposits',$4) RETURNING transaction_id",
         )
-        .bind(&reference).bind(amount).bind(customer_id).bind(event_id)
-        .fetch_one(&mut *tx).await?;
+        .bind(&reference)
+        .bind(amount)
+        .bind(customer_id)
+        .bind(event_id)
+        .fetch_one(&mut *tx)
+        .await?;
         // Customer credit (balance up); EXTERNAL_CASH debit.
         zero_available(&mut tx, *account_id).await?;
-        post_two_legged(&mut tx, txn_id, cash_id, "debit", *account_id, "credit", *amount).await?;
+        post_two_legged(
+            &mut tx,
+            txn_id,
+            cash_id,
+            "debit",
+            *account_id,
+            "credit",
+            *amount,
+        )
+        .await?;
         recompute_available(&mut tx, *account_id).await?;
         deposit_total += *amount;
     }
@@ -399,7 +446,8 @@ async fn capitalise(
            AND ia.accrual_date >= $1 AND ia.accrual_date < $2 \
          GROUP BY ia.account_id, a.customer_id",
     )
-    .bind(start).bind(end)
+    .bind(start)
+    .bind(end)
     .fetch_all(&mut *tx)
     .await?;
 
@@ -413,11 +461,24 @@ async fn capitalise(
              VALUES ($1,'interest',$2,'Interest capitalisation','completed',$3, \
                      CURRENT_TIMESTAMP,'card','lending',$4) RETURNING transaction_id",
         )
-        .bind(&reference).bind(amount).bind(customer_id).bind(event_id)
-        .fetch_one(&mut *tx).await?;
+        .bind(&reference)
+        .bind(amount)
+        .bind(customer_id)
+        .bind(event_id)
+        .fetch_one(&mut *tx)
+        .await?;
         // Card credit (owed up); EXTERNAL_CASH debit.
         zero_available(&mut tx, *account_id).await?;
-        post_two_legged(&mut tx, txn_id, cash_id, "debit", *account_id, "credit", *amount).await?;
+        post_two_legged(
+            &mut tx,
+            txn_id,
+            cash_id,
+            "debit",
+            *account_id,
+            "credit",
+            *amount,
+        )
+        .await?;
         recompute_available(&mut tx, *account_id).await?;
         asset_total += *amount;
     }
@@ -427,8 +488,10 @@ async fn capitalise(
         "UPDATE interest_accruals SET capitalised = TRUE \
          WHERE capitalised = FALSE AND accrual_date >= $1 AND accrual_date < $2",
     )
-    .bind(start).bind(end)
-    .execute(&mut *tx).await?;
+    .bind(start)
+    .bind(end)
+    .execute(&mut *tx)
+    .await?;
 
     // Monthly maintenance fee on real customer deposit accounts. `CUSTOMER_ACCOUNT`
     // excludes the bank's own system accounts — so a real customer with a large
@@ -462,11 +525,24 @@ async fn capitalise(
              VALUES ($1,'fee',$2,'Monthly account maintenance fee','completed',$3, \
                      CURRENT_TIMESTAMP,'deposit','deposits',$4) RETURNING transaction_id",
         )
-        .bind(&reference).bind(fee).bind(customer_id).bind(event_id)
-        .fetch_one(&mut *tx).await?;
+        .bind(&reference)
+        .bind(fee)
+        .bind(customer_id)
+        .bind(event_id)
+        .fetch_one(&mut *tx)
+        .await?;
         // Customer debit (balance down); EXTERNAL_CASH credit.
         zero_available(&mut tx, *account_id).await?;
-        post_two_legged(&mut tx, txn_id, *account_id, "debit", cash_id, "credit", fee).await?;
+        post_two_legged(
+            &mut tx,
+            txn_id,
+            *account_id,
+            "debit",
+            cash_id,
+            "credit",
+            fee,
+        )
+        .await?;
         recompute_available(&mut tx, *account_id).await?;
         maintenance_total += fee;
     }
@@ -476,24 +552,47 @@ async fn capitalise(
            (period, economic_event_id, deposit_total, asset_total, maintenance_total) \
          VALUES ($1,$2,$3,$4,$5)",
     )
-    .bind(&req.period).bind(event_id).bind(deposit_total).bind(asset_total).bind(maintenance_total)
-    .execute(&mut *tx).await?;
+    .bind(&req.period)
+    .bind(event_id)
+    .bind(deposit_total)
+    .bind(asset_total)
+    .bind(maintenance_total)
+    .execute(&mut *tx)
+    .await?;
 
     // One atomic GL document for all three reclass/fee movements, before commit.
     let mut lines = Vec::new();
     if deposit_total > Decimal::ZERO {
-        lines.push(line(Gl::AccruedInterestPayable, Direction::Debit, deposit_total));
+        lines.push(line(
+            Gl::AccruedInterestPayable,
+            Direction::Debit,
+            deposit_total,
+        ));
         lines.push(line(Gl::CustomerDeposits, Direction::Credit, deposit_total));
     }
     if asset_total > Decimal::ZERO {
         lines.push(line(Gl::CardReceivable, Direction::Debit, asset_total));
-        lines.push(line(Gl::AccruedInterestReceivable, Direction::Credit, asset_total));
+        lines.push(line(
+            Gl::AccruedInterestReceivable,
+            Direction::Credit,
+            asset_total,
+        ));
     }
     if maintenance_total > Decimal::ZERO {
-        lines.push(line(Gl::CustomerDeposits, Direction::Debit, maintenance_total));
+        lines.push(line(
+            Gl::CustomerDeposits,
+            Direction::Debit,
+            maintenance_total,
+        ));
         lines.push(line(Gl::FeeIncome, Direction::Credit, maintenance_total));
     }
-    post_balanced(&state, &format!("CAP-{}", req.period), "Monthly capitalisation", lines).await?;
+    post_balanced(
+        &state,
+        &format!("CAP-{}", req.period),
+        "Monthly capitalisation",
+        lines,
+    )
+    .await?;
 
     tx.commit().await?;
 

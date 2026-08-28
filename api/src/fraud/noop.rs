@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use super::{FraudAction, FraudCheck, FraudCheckError, FraudDecision, FraudRequest};
+use super::{Disposition, FraudAction, FraudCheck, FraudCheckError, FraudDecision, FraudRequest};
 
 pub struct NoopFraudCheck;
 
@@ -32,5 +32,18 @@ impl FraudCheck for NoopFraudCheck {
     /// engine nobody asked it to call.
     async fn report_denial(&self, _payload: &serde_json::Value) -> Result<(), FraudCheckError> {
         Ok(())
+    }
+
+    /// Also never reached: in off-mode nothing is ever held, so no movement is
+    /// ever parked and nothing has a disposition to ask about. Answering
+    /// "allowed, no case" is the truthful reading of a backend that allows
+    /// everything — and it is inert, because releasing needs a `cleared`
+    /// verdict, which this can never produce.
+    async fn disposition(&self, _operation_id: Uuid) -> Result<Disposition, FraudCheckError> {
+        Ok(Disposition {
+            action: "allow".to_string(),
+            case_status: None,
+            raw_case_status: None,
+        })
     }
 }

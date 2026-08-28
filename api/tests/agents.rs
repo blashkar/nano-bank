@@ -940,7 +940,11 @@ async fn transfer_guards() {
     let resp = agent_transfer(&c, &atoken, b, 50.0, &Uuid::new_v4().to_string()).await;
     // Was 400 INSUFFICIENT_FUNDS — a strict predicate on available_balance, so an
     // agent could bisect the balance with free probes and never hold read:balance.
-    assert_eq!(resp.status().as_u16(), 403, "insufficient funds, refused opaquely");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "insufficient funds, refused opaquely"
+    );
     assert_eq!(error_code(resp).await, "TRANSFER_REFUSED");
     assert_eq!(mandate_daily_used(&c, &token, mandate).await, 0.0);
     if let Some(db) = test_db().await {
@@ -1788,12 +1792,16 @@ async fn agent_refusals_are_indistinguishable() {
     // exists but is not on the allowlist, and the allowed account with no funds.
     let probes = [
         ("nonexistent destination", Uuid::new_v4()),
-        ("existing but not allowlisted", create_account(&c, &token, "savings").await),
+        (
+            "existing but not allowlisted",
+            create_account(&c, &token, "savings").await,
+        ),
         ("allowlisted but unfunded", known),
     ];
     let mut seen: Vec<(u16, String)> = Vec::new();
     for (label, destination) in probes {
-        let resp = agent_transfer(&c, &atoken, destination, 50.0, &Uuid::new_v4().to_string()).await;
+        let resp =
+            agent_transfer(&c, &atoken, destination, 50.0, &Uuid::new_v4().to_string()).await;
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap();
         assert_eq!(status, 403, "{label} must refuse with 403");
@@ -1875,7 +1883,11 @@ async fn agent_registration_is_throttled_per_address() {
         .send()
         .await
         .unwrap();
-    assert_eq!(after.status().as_u16(), 201, "the window recovers as it drains");
+    assert_eq!(
+        after.status().as_u16(),
+        201,
+        "the window recovers as it drains"
+    );
 }
 
 /// An ask nobody answers is a terminal outcome too, and the activity view now
@@ -1969,7 +1981,14 @@ async fn agent_poll_expiry_is_audited() {
     let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
     let atoken = agent_token(&c, agent_id, &secret, mandate).await;
 
-    let ask = park(&c, &atoken, b, 250.0, &format!("agent-expiry-{}", Uuid::new_v4())).await;
+    let ask = park(
+        &c,
+        &atoken,
+        b,
+        250.0,
+        &format!("agent-expiry-{}", Uuid::new_v4()),
+    )
+    .await;
     let approval_id = ask["approval_id"].as_str().unwrap().to_string();
     age_out(&db, &approval_id).await;
 
@@ -2010,7 +2029,14 @@ async fn agent_poll_cannot_expire_another_mandates_ask() {
     let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
     let atoken = agent_token(&c, agent_id, &secret, mandate).await;
 
-    let ask = park(&c, &atoken, b, 250.0, &format!("cross-expiry-{}", Uuid::new_v4())).await;
+    let ask = park(
+        &c,
+        &atoken,
+        b,
+        250.0,
+        &format!("cross-expiry-{}", Uuid::new_v4()),
+    )
+    .await;
     let approval_id = ask["approval_id"].as_str().unwrap().to_string();
     age_out(&db, &approval_id).await;
 
@@ -2142,7 +2168,10 @@ async fn expiry_that_cannot_be_audited_does_not_expire() {
         .await
         .unwrap();
 
-    assert_eq!(blocked_status, 500, "an unauditable expiry must fail loudly");
+    assert_eq!(
+        blocked_status, 500,
+        "an unauditable expiry must fail loudly"
+    );
     assert_eq!(
         status_while_blocked, "pending",
         "the flip must roll back with its audit — not commit alone"
@@ -2223,7 +2252,14 @@ async fn denied_transfer_is_mirrored_to_the_outbox() {
     let atoken = agent_token(&c, agent_id, &secret, mandate).await;
     let stranger = create_account(&c, &session(&c).await.1, "chequing").await;
 
-    let resp = agent_transfer(&c, &atoken, stranger, 10.0, &format!("den-{}", Uuid::new_v4())).await;
+    let resp = agent_transfer(
+        &c,
+        &atoken,
+        stranger,
+        10.0,
+        &format!("den-{}", Uuid::new_v4()),
+    )
+    .await;
     assert!(resp.status().as_u16() >= 400, "transfer must be refused");
 
     let rows = outbox_rows(&db, mandate).await;
@@ -2248,7 +2284,10 @@ async fn denied_transfer_is_mirrored_to_the_outbox() {
     // Both halves matter: `is_string` is the contract, and the scale is the
     // proof the cast did not quietly normalise `10.00` down to `10`.
     let amount = &payload["detail"]["amount"];
-    assert!(amount.is_string(), "amount must be a JSON string: {payload}");
+    assert!(
+        amount.is_string(),
+        "amount must be a JSON string: {payload}"
+    );
     assert_eq!(amount, "10.00", "the column's scale must survive the cast");
 }
 
@@ -2279,13 +2318,17 @@ async fn allowed_action_is_not_mirrored() {
             .as_u16(),
         200
     );
-    let audited: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM agent_actions WHERE mandate_id = $1 AND decision = 'allowed'")
-            .bind(mandate)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    assert!(audited >= 2, "the allowed actions really happened: {audited}");
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agent_actions WHERE mandate_id = $1 AND decision = 'allowed'",
+    )
+    .bind(mandate)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(
+        audited >= 2,
+        "the allowed actions really happened: {audited}"
+    );
     assert!(
         outbox_rows(&db, mandate).await.is_empty(),
         "allowed actions must not become denial telemetry"
@@ -2427,10 +2470,7 @@ async fn flush_denials_is_idempotent_and_skips_when_backend_off() {
 
     let svc = admin_service_token(&c).await;
     let flush = c
-        .post(format!(
-            "{}/api/v1/fraud/admin/flush-denials",
-            base_url()
-        ))
+        .post(format!("{}/api/v1/fraud/admin/flush-denials", base_url()))
         .bearer_auth(&svc)
         .send()
         .await
@@ -2455,10 +2495,7 @@ async fn flush_denials_is_idempotent_and_skips_when_backend_off() {
         assert_eq!(attempts, 1);
         // Second flush must not re-deliver it.
         let again = c
-            .post(format!(
-                "{}/api/v1/fraud/admin/flush-denials",
-                base_url()
-            ))
+            .post(format!("{}/api/v1/fraud/admin/flush-denials", base_url()))
             .bearer_auth(&svc)
             .send()
             .await
@@ -2631,7 +2668,10 @@ async fn a_park_that_fails_leaves_no_audit_and_no_outbox_row() {
         .unwrap();
 
     assert!(status >= 500, "a park that cannot be written must not 2xx");
-    assert_eq!(audits, 0, "the audit must roll back with the ask it describes");
+    assert_eq!(
+        audits, 0,
+        "the audit must roll back with the ask it describes"
+    );
     assert_eq!(mirrored, 0, "and nothing may reach the engine for it");
 }
 
@@ -2691,7 +2731,10 @@ async fn a_duplicate_racing_an_uncommitted_park_adopts_it() {
     let status = resp.status().as_u16();
     let body: Value = resp.json().await.unwrap();
 
-    assert_eq!(status, 202, "a benign duplicate is not a server fault: {body}");
+    assert_eq!(
+        status, 202,
+        "a benign duplicate is not a server fault: {body}"
+    );
     assert_eq!(
         body["approval_id"].as_str().unwrap(),
         winner.to_string(),

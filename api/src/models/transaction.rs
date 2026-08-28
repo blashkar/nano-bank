@@ -193,6 +193,7 @@ pub struct TransactionHistoryQuery {
 
     pub transaction_type: Option<String>,
     pub status: Option<TransactionStatus>,
+    pub description: Option<String>,
 
     #[validate(range(min = 1, max = 100))]
     pub limit: Option<u32>,

@@ -130,4 +130,42 @@ pub trait FraudCheck: Send + Sync {
     /// swallowed error here would silently drop the row forever, which is the
     /// exact failure the outbox exists to prevent.
     async fn report_denial(&self, payload: &serde_json::Value) -> Result<(), FraudCheckError>;
+
+    /// What became of a decision: has a reviewer looked at the case it opened,
+    /// and what did they say. The read half of parking a held movement — the
+    /// bank polls this exactly as the agent plane polls its own approvals,
+    /// rather than the engine calling back.
+    ///
+    /// Returns `Result`, not a swallowed error, and the caller must NOT treat a
+    /// failure as "still open": an engine outage would then look identical to a
+    /// reviewer who has not decided yet, and a parked movement would sit until
+    /// it expired. It surfaces so the poll says "unknown, ask again".
+    async fn disposition(&self, operation_id: Uuid) -> Result<Disposition, FraudCheckError>;
+}
+
+/// The engine's answer to "what became of this decision"
+/// (`GET /v1/decisions/{operation_id}/disposition`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disposition {
+    pub action: String,
+    /// `None` means **no case was opened**, which is not the same as a case
+    /// nobody has reviewed yet (`Some(CaseStatus::Open)`). Collapsing the two
+    /// would release a movement no human ever looked at.
+    pub case_status: Option<CaseStatus>,
+    /// The verdict exactly as the engine spelled it, for the audit trail — a
+    /// vocabulary the bank does not recognize must still be recordable.
+    pub raw_case_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseStatus {
+    /// Held, and not yet reviewed. The state a parked movement waits in.
+    Open,
+    /// Reviewed and cleared — the one verdict that releases money.
+    Cleared,
+    ConfirmedFraud,
+    /// A verdict the bank does not know. Deliberately NOT a release: if the
+    /// engine grows a fourth verdict, an older bank must refuse to move money on
+    /// a word it cannot interpret rather than guess.
+    Unrecognized,
 }

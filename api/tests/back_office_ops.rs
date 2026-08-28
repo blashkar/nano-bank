@@ -320,7 +320,10 @@ async fn declines_returns_bucketed_shape_for_a_service_token() {
     }
     let svc = service_token(&c).await;
     let r = c
-        .get(format!("{}/api/v1/back-office/ops/declines?window=30d", base_url()))
+        .get(format!(
+            "{}/api/v1/back-office/ops/declines?window=30d",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await
@@ -341,13 +344,19 @@ async fn declines_rejects_a_customer_token() {
     }
     let cust = customer_token(&c).await;
     let r = c
-        .get(format!("{}/api/v1/back-office/ops/declines?window=30d", base_url()))
+        .get(format!(
+            "{}/api/v1/back-office/ops/declines?window=30d",
+            base_url()
+        ))
         .bearer_auth(&cust)
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 403,
-        "customer token must be refused on the service plane");
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "customer token must be refused on the service plane"
+    );
 }
 
 #[tokio::test]
@@ -358,7 +367,10 @@ async fn cards_summary_now_carries_auth_rates() {
     }
     let svc = service_token(&c).await;
     let r = c
-        .get(format!("{}/api/v1/back-office/ops/cards?window=30d", base_url()))
+        .get(format!(
+            "{}/api/v1/back-office/ops/cards?window=30d",
+            base_url()
+        ))
         .bearer_auth(&svc)
         .send()
         .await

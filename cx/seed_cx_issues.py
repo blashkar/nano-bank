@@ -37,12 +37,16 @@ def seed(db_params: dict, n: int = 40, seed_val: int = 7) -> int:
             ids = [r[0] for r in cur.fetchall()]
             if not ids:
                 raise RuntimeError("no customers to attach issues to — seed the bank first")
-            cur.execute("DELETE FROM cx_issues WHERE source = 'personal_manager'")
+            # 'demo_seed' — never 'personal_manager', which is the tag the
+            # production write path (agent/db.py::insert_cx_issue) stamps on
+            # every genuine customer filing. Deleting by that tag would wipe
+            # real complaints in any environment that has taken live filings.
+            cur.execute("DELETE FROM cx_issues WHERE source = 'demo_seed'")
             rows = build_issue_rows(ids, n=n, seed=seed_val)
             for r in rows:
                 cur.execute(
                     "INSERT INTO cx_issues (customer_id, category, severity, summary, detail,"
-                    " source, created_at) VALUES (%s,%s,%s,%s,%s,'personal_manager',"
+                    " source, created_at) VALUES (%s,%s,%s,%s,%s,'demo_seed',"
                     " now() - (%s || ' days')::interval)",
                     (r["customer_id"], r["category"], r["severity"], r["summary"],
                      r["detail"], r["created_at_offset_days"]))

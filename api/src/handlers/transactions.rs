@@ -30,7 +30,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -44,7 +44,7 @@ use validator::Validate;
 
 use crate::config::database::DatabasePool;
 use crate::errors::AppError;
-use crate::fraud::gate::{screen, FraudLink, ScreenInput, Screening};
+use crate::fraud::gate::{screen, FraudLink, ScreenInput, Screened, Screening};
 use crate::fraud::FraudAgentCtx;
 use crate::handlers::cards::{
     fetch_account_for_update, normalize_amount, post_gl_entry, post_two_legged, reference_number,
@@ -61,9 +61,9 @@ use crate::models::transaction::{
     TransactionResponse, WithdrawalRequest,
 };
 
-const CASH_CUSTOMER_EMAIL: &str = "cash@nano.bank";
+pub(crate) const CASH_CUSTOMER_EMAIL: &str = "cash@nano.bank";
 /// The external-cash counterparty is a chequing account under the cash customer.
-const CASH_ACCOUNT_TYPE: &str = "chequing";
+pub(crate) const CASH_ACCOUNT_TYPE: &str = "chequing";
 
 const DEFAULT_HISTORY_LIMIT: u32 = 50;
 
@@ -84,7 +84,7 @@ pub fn transaction_routes() -> Router<AppState> {
 /// Ensure the synthetic cash customer and its `EXTERNAL_CASH` account exist and
 /// return the account id. Idempotent; re-resolved per request so a data wipe
 /// self-heals (mirrors `cards::ensure_system_accounts`).
-async fn ensure_external_cash_account(pool: &DatabasePool) -> Result<Uuid, sqlx::Error> {
+pub(crate) async fn ensure_external_cash_account(pool: &DatabasePool) -> Result<Uuid, sqlx::Error> {
     // email is the stable identity (ON CONFLICT). The other UNIQUE columns are
     // chosen so they can't collide with real customers: a non-numeric phone
     // sentinel (the column has no format constraint) and a NULL sin (nullable).
@@ -168,7 +168,8 @@ async fn deposit_money(
             agent: None,
         },
     )
-    .await?;
+    .await?
+    .into_refusal()?;
     let cash_id = ensure_external_cash_account(&state.pool).await?;
 
     let mut tx = state.pool.begin().await?;
@@ -265,7 +266,8 @@ async fn withdraw_money(
             agent: None,
         },
     )
-    .await?;
+    .await?
+    .into_refusal()?;
     let cash_id = ensure_external_cash_account(&state.pool).await?;
 
     let mut tx = state.pool.begin().await?;
@@ -382,7 +384,12 @@ async fn transfer_money(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
     Json(req): Json<MoneyTransferRequest>,
-) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
+    // Two shapes, so the erased `Response`: **201 + the transaction** when it
+    // posts, **202 + a review id** when the engine holds it. A held transfer
+    // has no transaction to report — nothing was posted — so reusing
+    // `TransactionResponse` would mean nulls a client could not distinguish
+    // from a broken transfer.
+) -> Result<axum::response::Response, AppError> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
@@ -403,11 +410,19 @@ async fn transfer_money(
             find_by_idempotency_key(&state.pool, key, auth.customer_id, None).await?
         {
             let resp = load_transaction_response(&state.pool, existing).await?;
-            return Ok((StatusCode::OK, Json(resp)));
+            return Ok((StatusCode::OK, Json(resp)).into_response());
+        }
+        // A movement held for review has posted nothing, so the check above
+        // cannot see it. Without this a retry re-screens and mints a second
+        // decision, counting one customer intent twice in the velocity windows.
+        if let Some(parked) =
+            crate::handlers::reviews::open_park_for(&state, auth.customer_id, Some(key)).await?
+        {
+            return Ok((StatusCode::ACCEPTED, Json(parked)).into_response());
         }
     }
 
-    let resp = execute_transfer(
+    let executed = execute_transfer(
         &state,
         auth.customer_id,
         TransferSpec {
@@ -422,7 +437,68 @@ async fn transfer_money(
         Screening::customer(auth.session_id),
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(resp)))
+
+    match executed {
+        Executed::Posted(resp) => Ok((StatusCode::CREATED, Json(resp)).into_response()),
+        // The customer plane parks. This is the one call site where a held
+        // movement has somewhere to go: a person is waiting, and a reviewer's
+        // verdict can release it (v2 §7).
+        Executed::Held { link, .. } => {
+            let parked = crate::handlers::reviews::park(
+                &state,
+                crate::handlers::reviews::ParkRequest {
+                    customer_id: auth.customer_id,
+                    account_id: req.from_account_id,
+                    rail: "transfer",
+                    amount,
+                    idempotency_key: req.idempotency_key.as_deref(),
+                    movement: serde_json::to_value(crate::handlers::reviews::ParkedTransfer {
+                        from_account_id: req.from_account_id,
+                        to_account_id: req.to_account_id,
+                        amount,
+                        description: req.description.clone(),
+                        external_reference: req.reference.clone(),
+                        idempotency_key: req.idempotency_key.clone(),
+                    })
+                    .map_err(|e| AppError::Internal(e.to_string()))?,
+                    link: &link,
+                },
+            )
+            .await?;
+            Ok((StatusCode::ACCEPTED, Json(parked)).into_response())
+        }
+    }
+}
+
+/// Post a transfer a reviewer cleared, carrying the decision that held it.
+///
+/// Deliberately NOT routed through [`execute_transfer`]: that screens, and a
+/// released movement must not be screened again — see [`FraudLink::released`].
+/// Everything else it does (ownership, operability, funds, limits, the fee) is
+/// re-checked here by construction, because the money work is the same code
+/// path below the screening.
+pub(crate) async fn execute_released_transfer(
+    state: &AppState,
+    customer_id: Uuid,
+    spec: &crate::handlers::reviews::ParkedTransfer,
+    link: FraudLink,
+) -> Result<Uuid, AppError> {
+    let posted = post_screened_transfer(
+        state,
+        customer_id,
+        TransferSpec {
+            from_account_id: spec.from_account_id,
+            to_account_id: spec.to_account_id,
+            amount: spec.amount,
+            description: &spec.description,
+            external_reference: spec.external_reference.as_deref(),
+            idempotency_key: spec.idempotency_key.as_deref(),
+            agent: None,
+        },
+        link,
+    )
+    .await?;
+    Ok(posted.transaction_id)
 }
 
 /// A transfer to execute, independent of who asked for it.
@@ -448,6 +524,28 @@ pub(crate) struct AgentTransferCtx {
     pub cap_override: bool,
 }
 
+/// What [`execute_transfer`] concluded.
+///
+/// A held transfer is not a failure, so it does not come back as one. The core
+/// returns the hold and each caller decides what it can do with it: the
+/// customer plane parks it for review (v2 §7), the agent plane refuses, because
+/// it already parks for step-up approval and two parking mechanisms on one path
+/// is how they drift.
+pub(crate) enum Executed {
+    Posted(TransactionResponse),
+    Held { link: FraudLink, message: String },
+}
+
+impl Executed {
+    /// For callers that cannot park — the pre-parking behaviour, exactly.
+    pub(crate) fn posted_or_refuse(self) -> Result<TransactionResponse, AppError> {
+        match self {
+            Executed::Posted(resp) => Ok(resp),
+            Executed::Held { message, .. } => Err(AppError::TransactionUnderReview(message)),
+        }
+    }
+}
+
 /// The transfer core, shared by the customer handler above and the agent
 /// surface (`handlers/agent_api.rs`). `customer_id` is the acting owner of the
 /// funding account: the caller's own id for customer transfers, the mandate's
@@ -459,7 +557,7 @@ pub(crate) async fn execute_transfer(
     customer_id: Uuid,
     spec: TransferSpec<'_>,
     screening: Screening,
-) -> Result<TransactionResponse, AppError> {
+) -> Result<Executed, AppError> {
     let amount = spec.amount;
 
     if spec.from_account_id == spec.to_account_id {
@@ -478,7 +576,7 @@ pub(crate) async fn execute_transfer(
         }
         (_, key) => key,
     };
-    let fraud_link: FraudLink = screen(
+    let screened = screen(
         state,
         ScreenInput {
             kind: "transfer",
@@ -503,6 +601,36 @@ pub(crate) async fn execute_transfer(
     )
     .await?;
 
+    // Hand a hold back to the caller and stop here — before the fee lookup, the
+    // DB transaction, the mandate reservation and the row locks. Nothing below
+    // has run, so a held movement costs no lock and moves no money.
+    //
+    // Whether a hold can be parked is the CALLER's to decide, not this
+    // function's: the customer plane parks it, the agent plane already has its
+    // own step-up park and would otherwise have two.
+    let fraud_link: FraudLink = match screened {
+        Screened::Cleared(link) => link,
+        Screened::Held { link, message } => return Ok(Executed::Held { link, message }),
+    };
+
+    post_screened_transfer(state, customer_id, spec, fraud_link)
+        .await
+        .map(Executed::Posted)
+}
+
+/// The money half of a transfer: everything below screening.
+///
+/// Split out so a movement a reviewer cleared can post **without being screened
+/// again** — see [`execute_released_transfer`]. Both entry points share this
+/// body, so ownership, operability, funds, limits and the fee are enforced
+/// identically whether the transfer went straight through or waited for review.
+async fn post_screened_transfer(
+    state: &AppState,
+    customer_id: Uuid,
+    spec: TransferSpec<'_>,
+    fraud_link: FraudLink,
+) -> Result<TransactionResponse, AppError> {
+    let amount = spec.amount;
     let fee = state.settings.finance_config().transfer_fee;
     let cash_id = ensure_external_cash_account(&state.pool).await?;
 
@@ -1025,6 +1153,10 @@ fn push_filters(
         qb.push(" AND t.status = ");
         qb.push_bind(status.clone());
     }
+    if let Some(ref description) = q.description {
+        qb.push(" AND t.description ILIKE ");
+        qb.push_bind(format!("%{description}%"));
+    }
     if let Some(start_date) = q.start_date {
         qb.push(" AND t.created_at >= ");
         qb.push_bind(start_date);
@@ -1040,8 +1172,11 @@ fn push_filters(
 // ---------------------------------------------------------------------------
 
 /// Reject credit-card accounts (they use the card rails) and non-active status.
-fn ensure_operable(account: &Account) -> Result<(), AppError> {
-    if matches!(account.account_type, AccountType::CreditCard) {
+pub(crate) fn ensure_operable(account: &Account) -> Result<(), AppError> {
+    if matches!(
+        account.account_type,
+        AccountType::CreditCard | AccountType::Loan
+    ) {
         return Err(AppError::BadRequest(
             "credit card accounts use the card endpoints".to_string(),
         ));
@@ -1064,7 +1199,7 @@ fn ensure_operable(account: &Account) -> Result<(), AppError> {
 /// `ids` is deduped; `cash_id` is locked last, and only if it appeared in `ids`.
 /// Returns the rows found, keyed by account id — a caller turns a missing key
 /// into its own error (404 etc.).
-async fn lock_accounts_cash_last(
+pub(crate) async fn lock_accounts_cash_last(
     tx: &mut Tx<'_>,
     ids: &[Uuid],
     cash_id: Uuid,
@@ -1147,7 +1282,7 @@ async fn post_movement(
 
 // Groups the `transactions` INSERT columns; the arg count mirrors the row.
 #[allow(clippy::too_many_arguments)]
-async fn insert_transaction(
+pub(crate) async fn insert_transaction(
     tx: &mut Tx<'_>,
     reference: &str,
     transaction_type: &str,
@@ -1207,7 +1342,10 @@ async fn account_balance(tx: &mut Tx<'_>, account_id: Uuid) -> Result<Decimal, s
 /// first is always safe (the post-debit balance stays ≥ 0 because we verified
 /// `available_balance >= amount`); [`recompute_available`] restores the correct
 /// value afterward. Credited accounts never need this (their balance only rises).
-async fn set_available_zero(tx: &mut Tx<'_>, account_id: Uuid) -> Result<(), sqlx::Error> {
+pub(crate) async fn set_available_zero(
+    tx: &mut Tx<'_>,
+    account_id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE accounts SET available_balance = 0 WHERE account_id = $1")
         .bind(account_id)
         .execute(&mut **tx)
@@ -1217,7 +1355,10 @@ async fn set_available_zero(tx: &mut Tx<'_>, account_id: Uuid) -> Result<(), sql
 
 /// Recompute a deposit account's available balance: `balance + overdraft − open holds`.
 /// (Deposit accounts have a 0 overdraft; the term keeps the formula general.)
-async fn recompute_available(tx: &mut Tx<'_>, account_id: Uuid) -> Result<Decimal, sqlx::Error> {
+pub(crate) async fn recompute_available(
+    tx: &mut Tx<'_>,
+    account_id: Uuid,
+) -> Result<Decimal, sqlx::Error> {
     sqlx::query_scalar(
         r#"
         UPDATE accounts
@@ -1237,9 +1378,9 @@ async fn recompute_available(tx: &mut Tx<'_>, account_id: Uuid) -> Result<Decima
 /// A customer account's per-day transaction limit counters + limits, after
 /// resetting any that have rolled over (day / month / year).
 #[derive(sqlx::FromRow)]
-struct LimitState {
-    daily_withdrawal_limit: Decimal,
-    daily_withdrawal_used: Decimal,
+pub(crate) struct LimitState {
+    pub(crate) daily_withdrawal_limit: Decimal,
+    pub(crate) daily_withdrawal_used: Decimal,
     daily_transfer_limit: Decimal,
     daily_transfer_used: Decimal,
     monthly_transfer_limit: Decimal,
@@ -1250,7 +1391,7 @@ struct LimitState {
 
 /// Ensure a limits row exists (table defaults) and roll over stale counters,
 /// returning the current limits/usage. Uses the row lock held on the account.
-async fn ensure_and_reset_limits(
+pub(crate) async fn ensure_and_reset_limits(
     tx: &mut Tx<'_>,
     account_id: Uuid,
 ) -> Result<LimitState, sqlx::Error> {

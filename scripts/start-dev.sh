@@ -29,17 +29,12 @@ else
     fi
 fi
 
-# Step 2: Ensure Port Forwarding is Active
-if ! pgrep -f "kubectl port-forward.*nano-bank.*postgres" > /dev/null; then
-    echo "📡 Setting up port forwarding..."
-    
-    # Kill any dangling port-forward on 5432 just in case
-    if lsof -i :5432 > /dev/null 2>&1; then
-        echo "⚠️ Port 5432 is already in use by another process. Attempting to kill it..."
-        lsof -ti :5432 | xargs kill -9 2>/dev/null || true
-        sleep 1
-    fi
-
+# Step 2: Ensure Port 5432 is accessible
+echo "📡 Checking if database port 5432 is already listening..."
+if nc -z localhost 5432 2>/dev/null; then
+    echo "✅ Port 5432 is already active."
+else
+    echo "📡 Setting up port forwarding via kubectl..."
     kubectl port-forward -n nano-bank svc/postgres-service 5432:5432 > /tmp/nano-bank-port-forward.log 2>&1 &
     PF_PID=$!
     echo "✅ Port-forward started (PID: $PF_PID)"
@@ -52,8 +47,6 @@ if ! pgrep -f "kubectl port-forward.*nano-bank.*postgres" > /dev/null; then
         fi
         sleep 1
     done
-else
-    echo "✅ Port-forward is already running"
 fi
 
 echo "🔍 Testing database connection and running a sample query via kubectl..."

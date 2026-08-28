@@ -35,8 +35,9 @@ use crate::config::database::DatabasePool;
 use crate::errors::AppError;
 use crate::handlers::declines::{record_decline, DeclineEvent, DeclineReason};
 use crate::handlers::AppState;
-use crate::middleware::auth::AuthenticatedService;
+use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
 use crate::models::account::{Account, AccountStatus, AccountType};
+use validator::Validate;
 // The ledger port's account role (aliased to avoid clashing with the model's Account).
 use crate::ledger::{Account as GlAccount, Direction, EntryLine, NewEntry, PostedEntry};
 
@@ -57,6 +58,7 @@ pub fn card_routes() -> Router<AppState> {
         .route("/authorize", post(authorize))
         .route("/capture", post(capture))
         .route("/settle", post(settle))
+        .route("/payment", post(pay_credit_card))
 }
 
 // ---------------------------------------------------------------------------
@@ -130,10 +132,217 @@ async fn ensure_gl_account(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// A reference number matching `^[A-Z0-9]{10,20}$`: `prefix` + 12 digits.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Validate)]
+pub struct CreditCardPaymentRequest {
+    pub from_account_id: Uuid,
+    pub to_card_id: Uuid,
+    pub amount: Decimal,
+    #[validate(length(min = 1, max = 255))]
+    pub description: String,
+}
+
+async fn pay_credit_card(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Json(req): Json<CreditCardPaymentRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::models::transaction::TransactionResponse>,
+    ),
+    AppError,
+> {
+    req.validate()?;
+    let amount = normalize_amount(req.amount)?;
+
+    let mut tx = state.pool.begin().await?;
+
+    // Lock both accounts to prevent deadlocks (using lowest UUID first internally)
+    let ids = vec![req.from_account_id, req.to_card_id];
+    let locked =
+        crate::handlers::transactions::lock_accounts_cash_last(&mut tx, &ids, Uuid::nil()).await?;
+
+    let from = locked
+        .get(&req.from_account_id)
+        .ok_or_else(|| AppError::NotFound("From account not found".to_string()))?;
+    let to = locked
+        .get(&req.to_card_id)
+        .ok_or_else(|| AppError::NotFound("Credit card not found".to_string()))?;
+
+    // Validate ownership and types
+    if from.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("From account not found".to_string()));
+    }
+    if to.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("Credit card not found".to_string()));
+    }
+    if !matches!(
+        from.account_type,
+        AccountType::Chequing | AccountType::Savings
+    ) {
+        return Err(AppError::BadRequest(
+            "From account must be a chequing or savings account".to_string(),
+        ));
+    }
+    if !matches!(to.account_type, AccountType::CreditCard) {
+        return Err(AppError::BadRequest(
+            "To account must be a credit card".to_string(),
+        ));
+    }
+
+    // Ensure status is active. `ensure_operable` distinguishes Frozen from
+    // other invalid statuses (e.g. closed/pending) instead of collapsing
+    // everything into AccountFrozen.
+    crate::handlers::transactions::ensure_operable(from)?;
+    if !matches!(to.status, crate::models::account::AccountStatus::Active) {
+        return Err(AppError::BadRequest(
+            "Credit card is not active".to_string(),
+        ));
+    }
+
+    // Validate sufficient funds
+    if from.available_balance < amount {
+        return Err(AppError::InsufficientFunds);
+    }
+
+    // Daily withdrawal limit — a card payment draws down the funding account
+    // just like a withdrawal, so it must respect the same cap.
+    let limits =
+        crate::handlers::transactions::ensure_and_reset_limits(&mut tx, from.account_id).await?;
+    if limits.daily_withdrawal_used + amount > limits.daily_withdrawal_limit {
+        return Err(AppError::TransactionLimitExceeded);
+    }
+
+    // Record the transaction
+    let reference = reference_number("PMT");
+    let metadata = serde_json::json!({});
+
+    let txn_id = crate::handlers::transactions::insert_transaction(
+        &mut tx,
+        &reference,
+        "payment",
+        amount,
+        &req.description,
+        from.customer_id,
+        None,
+        metadata,
+    )
+    .await?;
+
+    // Post double-entry transaction entries balanced through VISA_CLEARING:
+    // - From Account is DEBITED (balance decreases by amount)
+    // - To Card is DEBITED (balance decreases by amount - owes less!)
+    // - VISA_CLEARING is CREDITED (clearing balance increases by amount * 2)
+    let system_accounts = ensure_system_accounts(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    // The `from` leg is a debit on a deposit account: floor its available
+    // balance to 0 first so the mid-INSERT balance trigger doesn't trip
+    // `chk_available_balance_logical` (see transactions::set_available_zero).
+    // The card leg never needs this — debiting it only ever raises its
+    // available credit.
+    crate::handlers::transactions::set_available_zero(&mut tx, from.account_id).await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO transaction_entries
+            (transaction_id, account_id, entry_type, amount, balance_before, balance_after, entry_order)
+        VALUES
+            ($1, $2, 'debit', $5, 0, 0, 1),
+            ($1, $3, 'debit', $5, 0, 0, 2),
+            ($1, $4, 'credit', $6, 0, 0, 3)
+        "#,
+    )
+    .bind(txn_id)
+    .bind(from.account_id)
+    .bind(to.account_id)
+    .bind(system_accounts.visa_clearing_id)
+    .bind(amount)
+    .bind(amount * Decimal::from(2))
+    .execute(&mut *tx)
+    .await?;
+
+    crate::handlers::transactions::recompute_available(&mut tx, from.account_id).await?;
+
+    // Recompute the credit card's available credit (limit - balance)
+    recompute_card_available(&mut tx, to.account_id).await?;
+
+    sqlx::query(
+        "UPDATE account_limits SET daily_withdrawal_used = daily_withdrawal_used + $2, \
+         updated_at = CURRENT_TIMESTAMP WHERE account_id = $1",
+    )
+    .bind(from.account_id)
+    .bind(amount)
+    .execute(&mut *tx)
+    .await?;
+
+    // Post the aggregate GL effect through the ledger port, before commit, so
+    // a core failure fails the payment rather than letting the GL drift (same
+    // discipline as capture/settle above): customer deposit liability down
+    // (Payable), card receivable down (CardReceivable) — mirrors loan
+    // repayment's Payable/Receivable pattern.
+    let gl = post_gl_entry(
+        &state,
+        &reference,
+        &req.description,
+        GlAccount::Payable,
+        GlAccount::CardReceivable,
+        amount,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .bind(format!("{}:{}", gl.backend, gl.id))
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    tracing::info!(
+        from_id = %from.account_id,
+        to_id = %to.account_id,
+        amount = %amount,
+        "💳 credit card payment posted persistently in database"
+    );
+
+    let resp =
+        crate::handlers::transactions::load_transaction_response(&state.pool, txn_id).await?;
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// A reference number matching `^[A-Z0-9]{10,20}$`: `prefix` + 12 base-36 chars.
+///
+/// Base 36, not base 10, and the difference is not cosmetic. `reference_number`
+/// is uniquely constrained in `transactions` and has no retry, so a collision is
+/// a 500 that aborts whatever the caller was doing. Twelve DIGITS is a 10^12
+/// space, and the table is append-only across the life of a deployment — a
+/// corpus run left 1,734,883 rows over 14 prefixes, of which `FEE` alone held
+/// 458,923. By the birthday bound that is a ~10% chance of collision on that
+/// prefix alone, better than 20% across all of them, and it compounds with every
+/// run because history accumulates. It duly fired, killing an 8-hour run at 75%.
+///
+/// The same twelve characters over `[0-9A-Z]` give 36^12 ~ 4.7e18, four million
+/// times larger, which puts the same 1.7M rows at odds of roughly 3e-7. Length
+/// and pattern are unchanged, so nothing downstream sees a difference.
+///
+/// This is still probabilistic. The deterministic fix is to retry on unique
+/// violation, which is worth doing if these ever become customer-visible
+/// identifiers rather than internal references — but it touches every insert
+/// path, and this does not.
 pub(crate) fn reference_number(prefix: &str) -> String {
-    let n = (Uuid::new_v4().as_u128() % 1_000_000_000_000) as u64;
-    format!("{}{:012}", prefix, n)
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut n = Uuid::new_v4().as_u128();
+    let mut out = String::with_capacity(prefix.len() + 12);
+    out.push_str(prefix);
+    for _ in 0..12 {
+        out.push(ALPHABET[(n % 36) as usize] as char);
+        n /= 36;
+    }
+    out
 }
 
 /// Round to 2 dp (the schema rejects anything else) and reject non-positive.
@@ -243,7 +452,11 @@ async fn authorize(
             },
         )
         .await;
-        match screened {
+        // A card authorization cannot park: it is synchronous and the terminal
+        // is waiting, so there is nobody to hand a review id to. `into_refusal`
+        // collapses a hold back to the refusal it has always been here — the
+        // same mapping the gate used before parking existed, not a second one.
+        match screened.and_then(crate::fraud::gate::Screened::into_refusal) {
             Ok(link) => fraud_link = Some(link),
             Err(AppError::TransactionDeclined) | Err(AppError::TransactionUnderReview(_)) => {
                 record_decline(
@@ -779,4 +992,51 @@ async fn recompute_card_available(
     .bind(account_id)
     .fetch_one(&mut **tx)
     .await
+}
+
+#[cfg(test)]
+mod reference_number_tests {
+    use super::reference_number;
+    use std::collections::HashSet;
+
+    #[test]
+    fn matches_the_documented_pattern() {
+        // `^[A-Z0-9]{10,20}$`. LYNXH is the longest prefix in use (5), so the
+        // widest output is 17 — inside the 20 the schema allows.
+        for prefix in ["FEE", "VISA", "LYNXH"] {
+            let r = reference_number(prefix);
+            assert_eq!(r.len(), prefix.len() + 12, "{r}");
+            assert!(
+                (10..=20).contains(&r.len()),
+                "{r} is outside the pattern's length"
+            );
+            assert!(
+                r.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+                "{r} has a character outside [A-Z0-9]"
+            );
+        }
+    }
+
+    #[test]
+    fn uses_the_whole_alphabet_not_just_digits() {
+        // The regression this guards. Twelve DIGITS is a 10^12 space, and
+        // `reference_number` is uniquely constrained with no retry: a corpus run
+        // accumulated 1.7M rows over 14 prefixes and duly collided, returning a
+        // 500 that killed the run. Letters are what make the space 36^12.
+        let seen: HashSet<char> = (0..200)
+            .flat_map(|_| reference_number("FEE").chars().skip(3).collect::<Vec<_>>())
+            .collect();
+        assert!(
+            seen.iter().any(|c| c.is_ascii_uppercase()),
+            "no letters in 2400 generated characters — the space is still base 10"
+        );
+    }
+
+    #[test]
+    fn does_not_repeat_across_many_draws() {
+        let n = 20_000;
+        let seen: HashSet<String> = (0..n).map(|_| reference_number("FEE")).collect();
+        assert_eq!(seen.len(), n, "reference numbers repeated within one batch");
+    }
 }

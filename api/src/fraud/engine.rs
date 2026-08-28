@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::json;
 
-use super::{FraudAction, FraudCheck, FraudCheckError, FraudDecision, FraudRequest};
+use super::{
+    CaseStatus, Disposition, FraudAction, FraudCheck, FraudCheckError, FraudDecision, FraudRequest,
+};
 
 const BREAKER_THRESHOLD: u32 = 5;
 const BREAKER_OPEN_SECS: u64 = 10;
@@ -70,6 +72,15 @@ pub struct EngineFraudCheck {
     /// Guards `/v1/outcomes`, the outbox drain. Deliberately separate — see
     /// [`Breaker`].
     telemetry_breaker: Breaker,
+    /// A customer polling a parked movement. Its own client and its own
+    /// breaker, for the same reason the two above are separate — and this one
+    /// was learned the hard way: it originally shared the decisions client, so
+    /// a read that is neither latency-critical nor money-gating ran on the
+    /// 150ms screening budget, timed out under concurrent load, and opened the
+    /// breaker in front of live transactions. A held movement's owner can wait
+    /// a second; a movement being screened cannot.
+    disposition_http: reqwest::Client,
+    disposition_breaker: Breaker,
 }
 
 impl EngineFraudCheck {
@@ -93,6 +104,11 @@ impl EngineFraudCheck {
                 .expect("reqwest telemetry client"),
             decisions_breaker: Breaker::default(),
             telemetry_breaker: Breaker::default(),
+            disposition_http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(outcomes_timeout_ms))
+                .build()
+                .expect("reqwest disposition client"),
+            disposition_breaker: Breaker::default(),
         }
     }
 
@@ -285,6 +301,76 @@ impl FraudCheck for EngineFraudCheck {
             status: status.as_u16(),
             body,
         })
+    }
+
+    async fn disposition(&self, operation_id: uuid::Uuid) -> Result<Disposition, FraudCheckError> {
+        if self.disposition_breaker.open() {
+            return Err(FraudCheckError::Transport("circuit open".to_string()));
+        }
+        let sent = self
+            .disposition_http
+            .get(format!(
+                "{}/v1/decisions/{operation_id}/disposition",
+                self.base_url
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await;
+        let resp = match sent {
+            Ok(r) => r,
+            Err(e) => {
+                self.disposition_breaker.record_failure();
+                return Err(if e.is_timeout() {
+                    FraudCheckError::Timeout
+                } else {
+                    FraudCheckError::Transport(e.to_string())
+                });
+            }
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            if status.is_server_error() {
+                self.disposition_breaker.record_failure();
+                return Err(FraudCheckError::Transport(format!(
+                    "engine {status}: {body}"
+                )));
+            }
+            return Err(FraudCheckError::Backend {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        self.disposition_breaker.record_success();
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| FraudCheckError::Transport(e.to_string()))?;
+        let raw = body
+            .get("case_status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Ok(Disposition {
+            action: body
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            case_status: raw.as_deref().map(parse_case_status),
+            raw_case_status: raw,
+        })
+    }
+}
+
+/// An unknown verdict maps to [`CaseStatus::Unrecognized`], never to `Cleared`.
+/// The engine owns this vocabulary and may grow it; a bank that guessed on a
+/// word it did not know would move money on a verdict it could not read.
+fn parse_case_status(status: &str) -> CaseStatus {
+    match status {
+        "open" => CaseStatus::Open,
+        "cleared" => CaseStatus::Cleared,
+        "confirmed_fraud" => CaseStatus::ConfirmedFraud,
+        _ => CaseStatus::Unrecognized,
     }
 }
 

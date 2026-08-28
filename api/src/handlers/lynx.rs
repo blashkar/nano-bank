@@ -239,7 +239,8 @@ async fn initiate_wire(
             agent: None,
         },
     )
-    .await?;
+    .await?
+    .into_refusal()?;
     // Counterparty institution must be a Lynx-capable, active participant.
     let ok: Option<(bool, bool)> = sqlx::query_as(
         "SELECT supports_lynx, active FROM rail_participants WHERE institution_number = $1",

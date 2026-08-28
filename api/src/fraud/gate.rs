@@ -1,8 +1,9 @@
 //! The shared screening gate every money-movement handler calls BEFORE its
 //! database transaction opens. Owns: operation-id minting, session-context
 //! recovery, the decision→error mapping, and the fail-open/fail-closed matrix.
-//! Callers get back a [`FraudLink`] to stamp into their money row's metadata —
-//! or an `AppError` that aborts the movement before any DB write.
+//! Callers get back a [`Screened`] — either a [`FraudLink`] to stamp into their
+//! money row's metadata, or a hold they may park — or an `AppError` that aborts
+//! the movement before any DB write.
 //!
 //! Auditing a refusal is the caller's job, not the gate's: the agent plane
 //! already records every failed transfer with its reason code, and a second
@@ -68,6 +69,46 @@ impl Screening {
     }
 }
 
+/// What screening concluded, from the caller's point of view.
+///
+/// A hold is not an error. It used to be one — [`screen`] returned
+/// `Err(TransactionUnderReview)` — and because an `Err` aborts the movement
+/// before the DB transaction opens, no caller could park what the engine held.
+/// The money went home and a reviewer clearing the case changed nothing, which
+/// is the opposite of v2 §7 ("funds reserved, not moved … on pass, execute").
+///
+/// So the hold moves to the success side, where a caller can act on it. Callers
+/// that genuinely cannot park say so with [`Screened::into_refusal`].
+pub(crate) enum Screened {
+    Cleared(FraudLink),
+    /// Held for review. The `link` carries the `operation_id` and `decision_id`
+    /// a parked movement needs in order to ask the engine what became of it
+    /// (`GET /v1/decisions/{operation_id}/disposition`).
+    Held {
+        link: FraudLink,
+        message: String,
+    },
+}
+
+impl Screened {
+    /// Collapse a hold back into the refusal it was before parking existed.
+    ///
+    /// For call sites where parking is not merely unimplemented but wrong: a
+    /// card authorization is synchronous and the terminal is waiting, so there
+    /// is nobody to hand a review id to. The batch rails (AFT, Lynx) have their
+    /// own settlement lifecycle and a parked entry would need to mean something
+    /// inside it.
+    ///
+    /// This exists so there is ONE decision→action mapping. A second `screen`
+    /// variant beside this one would be a second mapping, free to drift.
+    pub(crate) fn into_refusal(self) -> Result<FraudLink, AppError> {
+        match self {
+            Screened::Cleared(link) => Ok(link),
+            Screened::Held { message, .. } => Err(AppError::TransactionUnderReview(message)),
+        }
+    }
+}
+
 /// The linkage a caller stamps into `transactions.metadata.fraud`.
 #[derive(Debug, Clone)]
 pub(crate) struct FraudLink {
@@ -85,6 +126,24 @@ pub(crate) struct FraudLink {
 }
 
 impl FraudLink {
+    /// Rebuild the link for a movement a reviewer cleared, so the money row it
+    /// finally posts carries the decision that held it.
+    ///
+    /// A released movement is deliberately NOT re-screened: the engine already
+    /// ruled, and a human overrode that ruling. Re-screening would either
+    /// replay the same decision — holding it forever — or take a second reading
+    /// the reviewer never saw. `rescore` is `None` because this link never
+    /// failed open; there is a real decision behind it.
+    pub(crate) fn released(operation_id: Uuid, decision_id: Option<Uuid>) -> Self {
+        Self {
+            operation_id,
+            decision_id,
+            failed_open: false,
+            screened: true,
+            rescore: None,
+        }
+    }
+
     /// The JSON blob stamped into `transactions.metadata.fraud` — the audit
     /// join path between bank money rows and engine decision rows.
     pub fn metadata(&self) -> serde_json::Value {
@@ -143,19 +202,16 @@ async fn session_context(state: &AppState, session_id: Option<Uuid>) -> Option<F
     )
 }
 
-pub(crate) async fn screen(
-    state: &AppState,
-    input: ScreenInput<'_>,
-) -> Result<FraudLink, AppError> {
+pub(crate) async fn screen(state: &AppState, input: ScreenInput<'_>) -> Result<Screened, AppError> {
     let operation_id = Uuid::new_v4();
     if state.fraud.backend() == "off" {
-        return Ok(FraudLink {
+        return Ok(Screened::Cleared(FraudLink {
             operation_id,
             decision_id: None,
             failed_open: false,
             screened: false,
             rescore: None,
-        });
+        }));
     }
 
     let idempotency_key = match input.idempotency_key {
@@ -200,27 +256,40 @@ pub(crate) async fn screen(
                 "fraud decision received"
             );
             match decision.action {
-                FraudAction::Allow => Ok(FraudLink {
+                FraudAction::Allow => Ok(Screened::Cleared(FraudLink {
                     operation_id,
                     decision_id: Some(decision.decision_id),
                     failed_open: false,
                     screened: true,
                     rescore: None,
-                }),
+                })),
                 // The agent-plane audit for these is written by the caller's
                 // catch-all (handlers/agent_api.rs), which records EVERY failed
                 // agent transfer with its reason code. Auditing here as well wrote
                 // a second, contradictory row.
+                //
+                // A block stays an error and is NOT parkable: it is a refusal,
+                // not a wait. Only a hold has a verdict coming that could
+                // release it.
                 FraudAction::Block => Err(AppError::TransactionDeclined),
-                // hold_review today; challenge/delay_and_warn collapse here until
-                // the bank grows a challenge UX (integration phase 2).
+                // challenge/delay_and_warn still collapse onto hold_review, as
+                // they did before parking existed: no policy rule emits either
+                // (all 16 in policy_v3 are hold_review), so giving them their
+                // own treatment would be machinery in search of a caller.
                 FraudAction::HoldReview | FraudAction::Challenge | FraudAction::DelayAndWarn => {
-                    Err(AppError::TransactionUnderReview(
-                        decision.message_for_customer.unwrap_or_else(|| {
+                    Ok(Screened::Held {
+                        link: FraudLink {
+                            operation_id,
+                            decision_id: Some(decision.decision_id),
+                            failed_open: false,
+                            screened: true,
+                            rescore: None,
+                        },
+                        message: decision.message_for_customer.unwrap_or_else(|| {
                             "This transaction requires additional review before it can be completed."
                                 .to_string()
                         }),
-                    ))
+                    })
                 }
             }
         }
@@ -243,13 +312,13 @@ pub(crate) async fn screen(
                 // so we can't know `executed` here. Defer the rescore into the
                 // link; the caller fires it after the movement's outcome is
                 // known (see FraudLink::settle_rescore).
-                Ok(FraudLink {
+                Ok(Screened::Cleared(FraudLink {
                     operation_id,
                     decision_id: None,
                     failed_open: true,
                     screened: true,
                     rescore: Some(Box::new(request)),
-                })
+                }))
             } else {
                 // FAIL CLOSED: above the risk threshold no money moves blind.
                 tracing::error!(

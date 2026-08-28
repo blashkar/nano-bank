@@ -125,14 +125,16 @@ class CxDB:
             " WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.initiated_by = c.customer_id"
             " AND t.created_at >= now() - (%s || ' days')::interval)", (window_days,))}
 
-    def insert_campaign(self, instrument: str, segment: str, question: str) -> str:
+    def insert_campaign(self, instrument: str, segment: str, question: str,
+                        source: str = "demo_seed") -> str:
         import psycopg2
         conn = psycopg2.connect(**self._db)
         try:
             with conn, conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO survey_campaigns (instrument, segment, question)"
-                    " VALUES (%s,%s,%s) RETURNING id::text", (instrument, segment, question))
+                    "INSERT INTO survey_campaigns (instrument, segment, question, source)"
+                    " VALUES (%s,%s,%s,%s) RETURNING id::text",
+                    (instrument, segment, question, source))
                 return cur.fetchone()[0]
         finally:
             conn.close()

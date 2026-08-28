@@ -205,7 +205,13 @@ async fn post_mandated_transfer(
             screen_scope: None,
         },
     )
-    .await;
+    .await
+    // The agent plane does not park fraud holds. It already parks — for step-up
+    // approval, below — and routing a hold into a SECOND park would hand the
+    // agent a review id for an ask its owner never saw. A hold falls through to
+    // the catch-all, which audits it and collapses it into the same opaque
+    // refusal every other agent failure gets (see `refusal_for_agent`).
+    .and_then(crate::handlers::transactions::Executed::posted_or_refuse);
 
     match result {
         Ok(resp) => Ok((StatusCode::CREATED, Json(resp)).into_response()),

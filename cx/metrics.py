@@ -77,10 +77,14 @@ def issue_summary(issue_rows: list[dict], now=None) -> dict:
 
 
 def notable_issues(issue_rows: list[dict], limit: int = 5) -> list[dict]:
-    ordered = sorted(issue_rows, key=lambda r: (_SEV_RANK.get(r["severity"], 0),
-                                                str(r.get("created_at", ""))), reverse=True)
+    # only open (non-resolved) issues count as current pain — matches
+    # issue_summary()'s open/resolved split just above.
+    open_rows = [r for r in issue_rows if r["status"] != "resolved"]
+    ordered = sorted(open_rows, key=lambda r: (_SEV_RANK.get(r["severity"], 0),
+                                               str(r.get("created_at", ""))), reverse=True)
     return [{"id": r["id"], "customer_id": r["customer_id"], "category": r["category"],
-             "severity": r["severity"], "summary": r["summary"]} for r in ordered[:limit]]
+             "severity": r["severity"], "status": r["status"], "summary": r["summary"]}
+            for r in ordered[:limit]]
 
 
 def nps(scores: list[int]) -> dict:

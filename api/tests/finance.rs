@@ -66,7 +66,11 @@ async fn create_customer(c: &reqwest::Client) -> String {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "create customer: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "create customer: {}",
+        resp.status()
+    );
     email
 }
 
@@ -90,7 +94,11 @@ async fn create_account(c: &reqwest::Client, token: &str, account_type: &str) ->
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "create account: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "create account: {}",
+        resp.status()
+    );
     let v: Value = resp.json().await.unwrap();
     Uuid::parse_str(v["account_id"].as_str().unwrap()).unwrap()
 }
@@ -103,7 +111,11 @@ async fn service_token(c: &reqwest::Client) -> String {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "service-token: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "service-token: {}",
+        resp.status()
+    );
     let v: Value = resp.json().await.unwrap();
     v["access_token"].as_str().unwrap().to_string()
 }
@@ -151,7 +163,11 @@ async fn gl_balance_abs(c: &reqwest::Client, names: &[&str]) -> f64 {
 
 async fn account_balance(c: &reqwest::Client, token: &str, account_id: Uuid) -> f64 {
     let v: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), account_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            account_id
+        ))
         .bearer_auth(token)
         .send()
         .await
@@ -203,7 +219,10 @@ async fn daily_accrual_posts_and_is_idempotent() {
     let v1: Value = r1.json().await.unwrap();
     let expense_1 = as_num(&v1["expense_total"]);
     // Our $10k @ 3% contributes exactly 0.82; other test accounts may add more.
-    assert!(expense_1 >= 0.82, "expense_total should include our 0.82, got {expense_1}");
+    assert!(
+        expense_1 >= 0.82,
+        "expense_total should include our 0.82, got {expense_1}"
+    );
 
     // Idempotent: a second run for the same date returns identical totals.
     let r2 = post_accrue().await;
@@ -272,7 +291,10 @@ async fn capitalisation_credits_interest_and_charges_maintenance() {
     assert!(ar.status().is_success(), "accrue: {}", ar.status());
 
     let before = account_balance(&c, &token, acct).await;
-    assert!((before - 1000.0).abs() < 1e-6, "pre-capitalisation balance should be 1000, got {before}");
+    assert!(
+        (before - 1000.0).abs() < 1e-6,
+        "pre-capitalisation balance should be 1000, got {before}"
+    );
 
     let post_cap = || async {
         c.post(format!("{}/api/v1/finance/capitalise", base_url()))
@@ -289,15 +311,24 @@ async fn capitalisation_credits_interest_and_charges_maintenance() {
 
     // 1000 + 0.08 interest - 4.00 maintenance = 996.08.
     let after = account_balance(&c, &token, acct).await;
-    assert!((after - 996.08).abs() < 1e-6, "post-capitalisation balance should be 996.08, got {after}");
+    assert!(
+        (after - 996.08).abs() < 1e-6,
+        "post-capitalisation balance should be 996.08, got {after}"
+    );
 
     // Idempotent: re-running the period moves nothing and returns the same totals.
     let r2 = post_cap().await;
     assert!(r2.status().is_success(), "re-capitalise: {}", r2.status());
     let v2: Value = r2.json().await.unwrap();
-    assert_eq!(v2["economic_event_id"], v1["economic_event_id"], "same event id on re-run");
+    assert_eq!(
+        v2["economic_event_id"], v1["economic_event_id"],
+        "same event id on re-run"
+    );
     let after2 = account_balance(&c, &token, acct).await;
-    assert!((after2 - 996.08).abs() < 1e-6, "re-run must not move the balance, got {after2}");
+    assert!(
+        (after2 - 996.08).abs() < 1e-6,
+        "re-run must not move the balance, got {after2}"
+    );
 }
 
 /// A $100 card capture recognizes $1.50 interchange income (150 bps) in the GL.
@@ -384,11 +415,18 @@ async fn etransfer_charges_fee_income() {
         eprintln!("SKIP: GL core unavailable (e-transfer 503)");
         return;
     }
-    assert!(resp.status().is_success(), "send e-transfer: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "send e-transfer: {}",
+        resp.status()
+    );
 
     // 1000 - 50 held - 1.50 fee = 948.50.
     let bal = account_balance(&c, &token, acct).await;
-    assert!((bal - 948.50).abs() < 1e-6, "balance should be 948.50 after send+fee, got {bal}");
+    assert!(
+        (bal - 948.50).abs() < 1e-6,
+        "balance should be 948.50 after send+fee, got {bal}"
+    );
 
     let fee_after = gl_balance_abs(&c, &["FEE_INCOME", "0000800300"]).await;
     assert!(

@@ -52,10 +52,21 @@ def direct_tool(peer: str, base_url: str, audit: AuditPort, *,
         resp = await post_ask(base_url, directive, client)
         officer_response = resp.get("answer", "")
         new = audit.rows_since(peer, before)
-        officer_row = new[-1] if new else None
+        # A ledger-seq snapshot proves something landed for `peer` in this
+        # window — it isn't a token tying a row to THIS directive specifically.
+        # Exactly one new row is the attributable case. More than one (a second
+        # writer landed in the same window — a concurrent directive, or any
+        # other trigger of the officer's lever) can't be honestly pinned on
+        # this call alone, so say so instead of silently taking the last row
+        # as "the" result.
+        ambiguous = len(new) > 1
+        officer_row = new[-1] if len(new) == 1 else None
         effect = {"officer_acted": bool(new),
                   "officer_row": officer_row,
-                  "officer_response": officer_response}
+                  "officer_response": officer_response,
+                  "ambiguous": ambiguous}
+        if ambiguous:
+            effect["candidate_rows"] = new
         audit.direct(peer, {"directive": directive, "rationale": rationale}, effect)
         return {"peer": peer, "directive": directive, **effect}
 
@@ -66,8 +77,11 @@ def direct_tool(peer: str, base_url: str, audit: AuditPort, *,
             "own agent self-verifies and acts via its audited lever — you bypass no "
             "guardrail. This reads back the officer's fresh ledger row to prove a "
             "lever actually fired (officer_acted=false means the officer only "
-            "deliberated or refused), and records the CEO directive row. Pass a "
-            "`directive` (the imperative) and a `rationale` (your grounded why)."))
+            "deliberated or refused; ambiguous=true means more than one row landed "
+            "in the window and it can't be honestly pinned on this directive alone — "
+            "report that uncertainty, don't guess), and records the CEO directive "
+            "row. Pass a `directive` (the imperative) and a `rationale` (your "
+            "grounded why)."))
 
 
 def build_tools(registry: dict, audit: AuditPort, *, client=None) -> list:
