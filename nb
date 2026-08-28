@@ -89,6 +89,50 @@ cmd_down() {
   echo "down"
 }
 
+cmd_up_world_model() {
+  local scenario="${1:-}"
+  echo "bringing up the full stack ..."
+  SKIP_UI=1 ./scripts/deploy-all.sh
+
+  echo "port-forward: bank-api:8081 ..."
+  pf bank-api 8081
+  wait_http http://localhost:8081/health "bank-api"
+
+  [ -d "$WORLD_MODEL_DIR" ] || {
+    echo "$WORLD_MODEL_DIR not found -- checkout nano-bank-world-model beside nano-bank"
+    exit 1
+  }
+  ( cd "$WORLD_MODEL_DIR" && uv sync >/dev/null )
+
+  local -a scenarios
+  if [ -n "$scenario" ]; then
+    local path="$WORLD_MODEL_DIR/scenarios/$scenario"
+    [ -f "$path" ] || { echo "scenario not found: $path"; exit 1; }
+    scenarios=("$path")
+  else
+    scenarios=("$WORLD_MODEL_DIR"/scenarios/*.yaml)
+  fi
+
+  local failures=0 s base tag
+  for s in "${scenarios[@]}"; do
+    base="$(basename "$s" .yaml)"
+    tag="nb-$(date +%s)-$base"
+    echo "realizing $base (run-tag $tag) ..."
+    if ( cd "$WORLD_MODEL_DIR" && uv run world-model realize \
+           --scenario "scenarios/$(basename "$s")" \
+           --bank-url http://localhost:8081 --run-tag "$tag" --out ./realized ); then
+      echo "  OK: $base reconciled"
+    else
+      echo "  FAILED: $base did not reconcile"
+      failures=$((failures + 1))
+    fi
+  done
+
+  echo
+  echo "== world-model summary: $((${#scenarios[@]} - failures))/${#scenarios[@]} reconciled =="
+  [ "$failures" -eq 0 ] || exit 1
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
