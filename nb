@@ -133,6 +133,67 @@ cmd_up_world_model() {
   [ "$failures" -eq 0 ] || exit 1
 }
 
+up_plain_streamlit_demo() {
+  local name="$1"
+  echo "bringing up the full stack ..."
+  SKIP_UI=1 ./scripts/deploy-all.sh
+
+  local venv="demos/$name/.venv"
+  local reqs="demos/$name/requirements.txt"
+  local port env_str=""
+
+  case "$name" in
+    01-onboarding)
+      pf bank-api 8081
+      wait_http http://localhost:8081/health "bank-api"
+      port=8510
+      env_str="DEMO_API_BASE=http://localhost:8081"
+      ;;
+    02-simulator)
+      pf bank-api 8081
+      wait_http http://localhost:8081/health "bank-api"
+      port=8511
+      env_str="DEMO_API_BASE=http://localhost:8081"
+      ;;
+    03-manager-chat)
+      pf agent-api 8086
+      wait_http http://localhost:8086/health "agent-api"
+      local token
+      token=$(grep -E '^BRANCH_SERVICE_TOKEN=' agent/.env | cut -d= -f2-)
+      [ -n "$token" ] || { echo "BRANCH_SERVICE_TOKEN empty in agent/.env"; exit 1; }
+      port=8512
+      env_str="DEMO_BRANCH_BASE=http://localhost:8086 DEMO_BRANCH_TOKEN=$token"
+      ;;
+    04-external-agent)
+      pf agent-api 8086
+      wait_http http://localhost:8086/health "agent-api"
+      local token ollama_key
+      token=$(grep -E '^BRANCH_SERVICE_TOKEN=' agent/.env | cut -d= -f2-)
+      ollama_key=$(grep -E '^OLLAMA_API_KEY=' agent/.env | cut -d= -f2-)
+      [ -n "$token" ] || { echo "BRANCH_SERVICE_TOKEN empty in agent/.env"; exit 1; }
+      # app.py imports the `agent` package directly, so it needs agent/'s own
+      # deps (not just demos/04's thin requirements.txt) and repo-root on PYTHONPATH.
+      reqs="agent/requirements.txt"
+      port=8513
+      env_str="DEMO_BRANCH_BASE=http://localhost:8086 AGENT_GATEWAY_TOKEN=$token OLLAMA_API_KEY=$ollama_key PYTHONPATH=$PWD"
+      ;;
+  esac
+
+  if [ ! -x "$venv/bin/streamlit" ]; then
+    echo "creating demo venv ($venv) via uv ..."
+    uv venv "$venv" >/dev/null
+    uv pip install --python "$venv/bin/python" -r "$reqs" >/dev/null
+  fi
+
+  echo "launching demos/$name on http://localhost:$port ..."
+  env $env_str "$venv/bin/streamlit" run "demos/$name/app.py" \
+    --server.port "$port" --server.headless true --browser.gatherUsageStats false \
+    >"/tmp/nb-streamlit-$name.log" 2>&1 &
+  echo $! > "/tmp/nb-streamlit-$name.pid"
+  wait_http "http://localhost:$port" "$name"
+  echo "open http://localhost:$port"
+}
+
 cmd_up_demo() {
   local name="$1"
   is_valid_demo "$name" || {
