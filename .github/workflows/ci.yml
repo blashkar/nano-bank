@@ -103,3 +103,30 @@ jobs:
       - name: Stop bank API
         if: always()
         run: kill "$(cat /tmp/bank-api.pid)" 2>/dev/null || true
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: npm ci
+        working-directory: ui
+        run: npm ci
+
+      - name: typecheck
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: lint
+        working-directory: ui
+        run: npm run lint
+
+      - name: test
+        working-directory: ui
+        run: npm test
