@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: nano_bank_db
+          POSTGRES_USER: nanobank_user
+          POSTGRES_PASSWORD: secure_nano_password_2024!
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nanobank_user -d nano_bank_db"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Checkout nano-bank
+        uses: actions/checkout@v4
+
+      - name: Checkout nano-bank-modern-core
+        uses: actions/checkout@v4
+        with:
+          repository: bvcmartins/nano-bank-modern-core
+          path: nano-bank-modern-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+
+      - name: Load nano-bank schema
+        run: |
+          for f in src/core/tables/*.sql; do
+            echo "applying $f"
+            PGPASSWORD=secure_nano_password_2024! psql -h 127.0.0.1 -U nanobank_user -d nano_bank_db -f "$f"
+          done
+
+      - name: Bring up real modern core
+        working-directory: nano-bank-modern-core
+        run: docker compose up -d --build
+
+      - name: Wait for modern core
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8091/health && exit 0
+            sleep 2
+          done
+          echo "modern-core never became healthy"
+          exit 1
+
+      - name: cargo fmt --check
+        working-directory: api
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (report only, does not fail the job)
+        working-directory: api
+        run: cargo clippy --all-targets || true
+
+      - name: cargo build
+        working-directory: api
+        run: cargo build --all-targets
+
+      - name: Start bank API
+        working-directory: api
+        env:
+          CORE_BACKEND: modern
+          MODERN_CORE_URL: http://localhost:8091
+          NANO_BANK__DATABASE__HOST: 127.0.0.1
+        run: |
+          cargo run > /tmp/bank-api.log 2>&1 &
+          echo $! > /tmp/bank-api.pid
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8081/health && exit 0
+            sleep 2
+          done
+          echo "bank-api never became healthy"
+          cat /tmp/bank-api.log
+          exit 1
+
+      - name: cargo test
+        working-directory: api
+        env:
+          CORE_BACKEND: modern
+          MODERN_CORE_URL: http://localhost:8091
+          NANO_BANK__DATABASE__HOST: 127.0.0.1
+          NANO_BANK_TEST_DB_URL: postgres://nanobank_user:secure_nano_password_2024!@127.0.0.1:5432/nano_bank_db
+        run: cargo test -- --nocapture
+
+      - name: Stop bank API
+        if: always()
+        run: kill "$(cat /tmp/bank-api.pid)" 2>/dev/null || true
