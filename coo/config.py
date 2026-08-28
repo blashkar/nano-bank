@@ -9,6 +9,7 @@ class Settings:
     ollama_api_key: str
     ollama_base_url: str
     coo_model: str
+    coo_model_fallback: str
     operations_mcp_url: str
     qdrant_url: str
     memory_collection: str
@@ -29,6 +30,7 @@ class Settings:
             ollama_api_key=g("OLLAMA_API_KEY"),
             ollama_base_url=g("OLLAMA_BASE_URL", "https://ollama.com/v1"),
             coo_model=g("COO_MODEL", "glm-5.2"),
+            coo_model_fallback=g("COO_MODEL_FALLBACK", "glm-5.2"),
             operations_mcp_url=g("OPERATIONS_MCP_URL", "http://localhost:8092/mcp"),
             qdrant_url=g("QDRANT_URL", "http://localhost:8600"),
             memory_collection=g("MEMORY_COLLECTION", "coo_memory"),

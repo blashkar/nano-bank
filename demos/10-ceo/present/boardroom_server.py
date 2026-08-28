@@ -9,11 +9,15 @@ canonical recording, and rebuild boardroom.html — then the page reloads to pla
     demos/10-ceo/present/boardroom_server.py 8531
 
 Endpoints:
-    POST /api/capture   {"session":"meeting"|"debate"}   -> starts a capture
-    GET  /api/capture/status                              -> {running,session,beats,total,phase,ok,message}
+    POST /api/capture   {"session":"meeting"|"debate"|"build"}   -> starts a capture
+    GET  /api/capture/status                                     -> {running,session,beats,total,phase,ok,message}
 
-The capture drives demos/10-ceo/{drive,debate}.py against $CEO_API_URL
-(default http://localhost:8099 — port-forward svc/ceo first).
+meeting/debate drive demos/10-ceo/{drive,debate}.py against $CEO_API_URL
+(default http://localhost:8099 — port-forward svc/ceo first). build is
+different: it isn't a scripted board beat sequence, it fetches the coder's
+actual most recent run (task, reasoning, diff, tests, PR) straight from the
+coder service via fetch_build.py — kubectl exec into deploy/coder, no
+port-forward needed.
 """
 from __future__ import annotations
 import json
@@ -30,7 +34,7 @@ sys.path.insert(0, HERE)
 import state  # noqa: E402  (read_jsonl / save_recording)
 
 DRIVER = {"meeting": ("demos/10-ceo/drive.py", 6),
-          "debate":  ("demos/10-ceo/debate.py", 5)}
+          "debate":  ("demos/10-ceo/debate.py", 6)}
 CEO_URL = os.environ.get("CEO_API_URL", "http://localhost:8099")
 
 _LOCK = threading.Lock()
@@ -48,7 +52,27 @@ def _rebuild():
                    cwd=REPO, check=False)
 
 
+def _capture_build_worker():
+    _set(running=True, session="build", beats=0, total=1,
+         phase="capturing", ok=None, message="Fetching the coder's latest run…")
+    env = dict(os.environ,
+               XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000"),
+               XDG_DATA_HOME=os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")))
+    proc = subprocess.run([sys.executable, os.path.join(HERE, "fetch_build.py")],
+                          cwd=REPO, env=env, capture_output=True, text=True)
+    if proc.returncode == 0:
+        _rebuild()
+        _set(beats=1, phase="done", ok=True, message="Fetched the coder's run — reloading.")
+    else:
+        msg = (proc.stderr or proc.stdout or "fetch_build.py failed").strip().splitlines()[-1:]
+        _set(phase="failed", ok=False,
+             message=f"Fetch failed — kept the previous recording. {msg[0] if msg else ''}")
+    _set(running=False)
+
+
 def _capture_worker(session: str):
+    if session == "build":
+        return _capture_build_worker()
     rel, total = DRIVER[session]
     _set(running=True, session=session, beats=0, total=total,
          phase="capturing", ok=None, message="Convening the board…")
@@ -116,7 +140,7 @@ class Handler(SimpleHTTPRequestHandler):
             except json.JSONDecodeError:
                 req = {}
             session = req.get("session", "meeting")
-            if session not in DRIVER:
+            if session != "build" and session not in DRIVER:
                 return self._json(400, {"error": "unknown session"})
             with _LOCK:
                 if CAP["running"]:

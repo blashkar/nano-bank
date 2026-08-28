@@ -9,6 +9,7 @@ harness, grounding verifier, revise pass, live streaming) lives here.
 """
 from __future__ import annotations
 import asyncio
+import re
 import uuid
 from typing import AsyncIterator, Optional
 
@@ -44,8 +45,34 @@ def _last_ai_text(state) -> str:
     return _NO_ANSWER
 
 
+# A short "I'm done" acknowledgment with no real findings in it — not a real
+# answer. When another agent consults this one (csuite.collab.consult_tool),
+# this text is what gets relayed and attributed to it verbatim, so a
+# meta-acknowledgment here silently erases that officer's voice from the
+# consulting agent's turn. Mirrors the client-side JUNK_RE in
+# demos/10-ceo/present/boardroom.template.html so a beat that fails this check
+# is also exactly the beat isJunk() would drop.
+_JUNK_RE = re.compile(
+    r"^\s*\(?\s*((the )?analysis (is |now )?complete|all steps? done|all done|"
+    r"end of (the )?review|end of (the )?report|no answer|report above)\b",
+    re.IGNORECASE)
+
+
 def _empty(answer: str) -> bool:
-    return not answer or answer.strip() in ("", _NO_ANSWER)
+    a = (answer or "").strip()
+    if not a or a == _NO_ANSWER:
+        return True
+    # No blanket "no digits => junk" rule: a deliberately figure-free answer
+    # (a chair's plain framing/agenda statement, a scope-discipline deferral)
+    # is a valid answer on its own terms, not something to synthesize over. If
+    # a nudge fires here, its own text ("if you truly gathered nothing, say
+    # what you could not find and why") is what puts hedging language INTO an
+    # answer that was never supposed to report findings in the first place —
+    # confirmed live: a beat explicitly asking for a figure-free opening line
+    # got caught by this rule and came back apologizing for not having
+    # figures. Junk is a known PATTERN (a meta acknowledgment), not "brevity
+    # without numbers" — match it explicitly instead.
+    return bool(_JUNK_RE.match(a))
 
 
 def default_memory(settings):
@@ -80,7 +107,9 @@ async def ask(*, settings, message: str, prompt: str, model, tools, agent: str,
             "running_summary": "", "depth": 0}
     out = await react.ainvoke(init, config=cfg)
     answer = _last_ai_text(out)
-    if _empty(answer):   # model ended on an empty turn after tool work — synthesise
+    for _ in range(2):   # model ended on an empty/junk turn — nudge to synthesise
+        if not _empty(answer):
+            break
         out = await react.ainvoke({"messages": [HumanMessage(_SYNTH_NUDGE)]}, config=cfg)
         answer = _last_ai_text(out)
 
@@ -136,7 +165,9 @@ async def ask_stream(*, settings, message: str, prompt: str, model, tools, agent
         async for chunk in _pump(t1):
             yield chunk
         answer = _last_ai_text(t1.result())
-        if _empty(answer):   # empty final turn — nudge once to synthesise
+        for _ in range(2):   # empty/junk final turn — nudge to synthesise
+            if not _empty(answer):
+                break
             ts = _spawn({"messages": [HumanMessage(_SYNTH_NUDGE)]})
             async for chunk in _pump(ts):
                 yield chunk

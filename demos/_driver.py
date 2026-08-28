@@ -124,9 +124,11 @@ def run(beats: list[dict], *, api_url: str, agent_label: str, run_hint: str) -> 
         label = beat["thread"]
         tid = None if label == "new" else threads.get(label)
         try:
+            # 1200s: a beat can chain into a coder delegation (its own ~900s
+            # budget) via consult/direct -> delegate_coding_task.
             r = httpx.post(f"{api_url}/ask",
                            json={"message": beat["message"], "thread_id": tid},
-                           timeout=600)
+                           timeout=1200)
             r.raise_for_status()
             resp = r.json()
         except Exception as e:  # noqa: BLE001

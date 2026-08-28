@@ -4,6 +4,7 @@ from the standalone demo driver alike."""
 from __future__ import annotations
 import ast
 import json
+import re
 
 # Harness/plumbing tools are reported specially; everything else in a turn is a
 # domain (operations) tool worth naming.
@@ -45,8 +46,6 @@ def extract_highlights(trace: list[dict]) -> dict:
             "subagents": subagents, "recalls": recalls, "records": records,
             "compactions": compactions}
 
-
-import re  # noqa: E402
 
 _LEVER_TOOLS = {"execute_rollback", "execute_rollout_restart", "delegate_coding_task"}
 
@@ -108,20 +107,37 @@ def beat_outcome(trace: list[dict], outcome_hint: str | None = None) -> dict:
 from datetime import datetime, timezone  # noqa: E402
 
 
+_CONTENT_RE = re.compile(r"content=(?P<q>['\"])(?P<body>(?:\\.|(?!(?P=q)).)*)(?P=q)",
+                         re.DOTALL)
+
+
 def _payload_dict(output) -> dict:
     """Recover the tool's return dict from a trace event's `output`. The real trace
-    stores str(ToolMessage) — `content='<json>' name='...' tool_call_id='...'` — so
-    the payload is the FIRST JSON object embedded in that string. Also handles a
+    stores str(ToolMessage) — `content='<json>' name='...' tool_call_id='...'` —
+    where `<json>` is a JSON object put through Python's `repr()`. Also handles a
     bare dict, a plain JSON string, or a python dict-repr (test doubles)."""
     if isinstance(output, dict):
         return output
     s = str(output or "")
+    # Real path: content is a *repr'd* JSON string, so it must be un-repr'd
+    # (ast.literal_eval, which honours repr's own backslash/quote rules) before
+    # json-decoding it. Naively json-decoding the repr'd text breaks the moment
+    # the answer contains an escaped quote (e.g. a quoted phrase): repr doubles
+    # the JSON escape's backslash (`\"` -> `\\"`), and a bare brace-scan then
+    # misreads that as an unescaped closing quote, truncating the string.
+    m = _CONTENT_RE.search(s)
+    if m:
+        try:
+            content = ast.literal_eval(m.group(0)[len("content="):])
+            obj = json.loads(content)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:  # noqa: BLE001
+            pass
     i = s.find("{")
     if i < 0:
         return {}
     frag = s[i:]
-    # Real path: a JSON object embedded in content='...'. raw_decode stops at the
-    # object's closing brace, ignoring the trailing ` name='...' tool_call_id=...`.
     try:
         obj, _ = json.JSONDecoder().raw_decode(frag)
         if isinstance(obj, dict):
@@ -163,7 +179,21 @@ def board_contributions(trace: list[dict]) -> list[dict]:
             out.append({"officer": name[len("direct_"):], "role": "direct",
                         "text": _tool_output_field(o, "officer_response"),
                         "acted": bool(acted) if acted != "" else None})
-    return out
+    # A chair can circle back to the same officer more than once in a turn (e.g.
+    # to double-check a figure after a grounding revise). That follow-up is a
+    # short field-by-field confirmation, not a second real report, and it reads
+    # as noise (or an out-of-scope internal-plumbing dump) on the board — so
+    # keep only the longest (most substantive) reply per (officer, role).
+    best: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    for item in out:
+        key = (item["officer"], item["role"])
+        if key not in best:
+            order.append(key)
+            best[key] = item
+        elif len(item.get("text") or "") > len(best[key].get("text") or ""):
+            best[key] = item
+    return [best[k] for k in order]
 
 
 def beat_record(n: int, beat: dict, resp: dict, now: datetime | None = None) -> dict:

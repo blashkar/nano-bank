@@ -23,6 +23,10 @@ spec:
         - { name: CTO_URL,            value: http://cto:8095 }
         - { name: CXO_URL,            value: http://cxo:8098 }
         - { name: OLLAMA_BASE_URL,    value: https://ollama.com/v1 }
+        # kimi-k3's metered credit ran out under all-officer load; the
+        # primary/fallback pattern only recovers a failed BOOT-time probe, not a
+        # mid-conversation credit exhaustion. Back on the reliable, included
+        # kimi-k2.6 until that's better understood.
         - { name: CEO_MODEL,          value: kimi-k2.6 }
         - { name: CEO_MODEL_FALLBACK, value: kimi-k2.6 }
         - { name: API_PORT,           value: "8099" }

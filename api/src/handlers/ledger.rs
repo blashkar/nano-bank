@@ -28,6 +28,9 @@ fn ledger_error(e: LedgerError) -> AppError {
         LedgerError::Transport(msg) => {
             AppError::ServiceUnavailable(format!("ledger core unreachable: {msg}"))
         }
+        LedgerError::Database(msg) => {
+            AppError::ServiceUnavailable(format!("local database error: {msg}"))
+        }
     }
 }
 
