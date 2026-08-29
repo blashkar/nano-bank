@@ -23,3 +23,10 @@ def test_env_overrides():
     assert s.act_max_per_tx == Decimal("50.5")
     assert s.confirm_ttl_s == 90
     assert s.db["host"] == "host.containers.internal"
+
+
+def test_loan_max_principal_default_and_override():
+    s = Settings.from_env({})
+    assert s.loan_max_principal == Decimal("100000")
+    s2 = Settings.from_env({"LOAN_MAX_PRINCIPAL": "50000"})
+    assert s2.loan_max_principal == Decimal("50000")
