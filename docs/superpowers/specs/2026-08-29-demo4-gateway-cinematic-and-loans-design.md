@@ -60,43 +60,65 @@ the recording *is* that events list.
 - A `plan` event renders as the external agent's opening card (the
   instruction). A `result` event renders as a closing summary card.
 
-**New files**, mirroring the existing `present/` structure:
-- `demos/04-external-agent/capture.py` — demo 4 has no `run-demo.sh`/
-  `drive.py` today (its run is a direct in-process `ExternalAgent.run()`
-  call from Streamlit, not a driver script against a deployed service).
-  This script: optionally seeds the mandate (`--no-seed` to reuse an
+**Constraint discovered during planning:** `./nb up --demo 04-external-agent`
+(`nb:189`) hardcodes `streamlit run demos/$name/app.py` for every demo in its
+`01-onboarding|02-simulator|03-manager-chat|04-external-agent` bucket, and
+`nb:167-178` special-cases demo 4's *dependency resolution* (installs
+`agent/requirements.txt` into its venv, not the demo's own thin one) but
+still launches `demos/04-external-agent/app.py` by that exact path. Moving
+the console into `present/app.py` (the C-suite demos' layout) would silently
+break that command. So demo 4's restyle stays **in place** at
+`demos/04-external-agent/app.py` — same path, same behavior (one in-process
+`ExternalAgent.run()` per click, mandate seed/revoke unchanged) — just
+restyled into a two-tone nav+centre stepper, and now also saving each run as
+a recording so the cinematic can replay it later. `present/` holds only the
+cinematic-specific, capture-and-replay pieces, following the C-suite
+`present/` *pattern* without literally relocating the live app.
+
+**New files:**
+- `demos/04-external-agent/present/state.py` — `read_jsonl`,
+  `save_recording(dir_, events)`, `load_recording`, `latest_recording`
+  (same generic shape as the other `state.py` helpers, adapted to a plain
+  `events` list — no beat-catalog parsing, since there's no `BEATS` list to
+  introspect), plus a small `decision_style(decision)` mapping
+  (`allow`/`deny`/`pending_approval` → label + color) that both `app.py`
+  and the cinematic use for the gateway's decision badge.
+- `demos/04-external-agent/present/capture.py` — demo 4 has no
+  `run-demo.sh`/`drive.py` today (its run is a direct in-process
+  `ExternalAgent.run()` call from Streamlit, not a driver script against a
+  deployed service). This script exists solely for `gateway_server.py`'s
+  headless capture (there's no Streamlit session for the server to run
+  inline in): it optionally seeds the mandate (`--no-seed` to reuse an
   existing one), builds the planner LLM, calls `agent.run(instruction)`,
-  and streams each produced event as one JSONL line to `--emit-jsonl PATH`
-  (matching the shape the other captures already use, so `state.py`'s
-  `read_jsonl`/`save_recording`/`load_recording`/`latest_recording` are
-  reused unchanged).
-- `demos/04-external-agent/present/app.py` — a 3-pane stepper (nav = one
-  button per event, centre = the selected event's card styled with the two
-  side-colors, right = mandate/scope status + trace), with the same
-  ▶ Run live / ⏮ Replay last good run / ▦ All / ↺ Reset controls as the
-  other consoles. This *replaces* the current single-page `app.py` (the
-  mandate seed/revoke controls move into this console's top bar, unchanged
-  in behavior).
-- `demos/04-external-agent/present/state.py` — thin re-export/adaptation of
-  the existing `state.py` helpers (`read_jsonl`, `save_recording`,
-  `load_recording`, `latest_recording`); no beat-catalog parsing is needed
-  since there's no `BEATS` list to introspect.
+  and writes the resulting events to `--emit-jsonl PATH` (one run is a
+  handful of HTTP calls and returns in well under a second, so — unlike the
+  officer demos' multi-minute debates — this writes in one batch at the
+  end, not progressively).
 - `demos/04-external-agent/present/gateway.template.html` +
   `build_gateway.py` — the static cinematic template + inliner, same
-  mechanism as `build_boardroom.py` (regex/marker-replace the `RECORDINGS`
-  JS const with the captured JSON).
+  mechanism as `build_boardroom.py` (marker-replace a JS const with the
+  captured JSON — here `EVENTS`, the recording's raw event list, needing no
+  beats-shaped transform).
 - `demos/04-external-agent/present/gateway_server.py` — serves the
   `present/` dir statically plus `POST /api/capture` /
   `GET /api/capture/status`, running `capture.py` in a background thread
-  and rebuilding `gateway.html` on success — mirrors `boardroom_server.py`.
+  and rebuilding `gateway.html` on success — mirrors `boardroom_server.py`,
+  minus its multi-session (meeting/debate/build) plumbing since demo 4 has
+  one recording, not three.
 - `demos/04-external-agent/present/recordings/` — captured JSON,
-  `.gitignore`'d like the others (one canonical recording is fine; no
-  meeting/debate-style multi-session tabs for v1).
+  `.gitignore`'d like the others.
+
+`app.py` itself gets a nav+centre stepper (nav = one button per event,
+centre = the selected event's card, both sides colored per the stage
+palette below) in place of the current stacked transcript; the mandate
+panel/Seed/Revoke controls stay as they are today. A separate "mandate
+status" rail isn't added — the existing top banner already covers it, and
+duplicating it would be redundant with a 2-actor (not 5-officer) layout.
 
 **Not building**: a second recording/tab for the "revoke then re-run"
-interaction shown in the current live app. That stays a live-only
-Streamlit interaction in `present/app.py` (via the existing Seed/Revoke
-buttons); the cinematic replays one captured run.
+interaction shown in the live app. That stays a live-only interaction in
+`app.py` (via the existing Seed/Revoke buttons); the cinematic replays one
+captured run.
 
 ### B. Loan-aware personal manager (informational + apply)
 
@@ -173,8 +195,9 @@ committing new debt still needs the human.
   tell the client the application needs their own confirmation in the app
   (execute is confirm-path only; the agent can't do that step itself).
 
-**Demo instruction**: update `04-external-agent/present/app.py`'s default
-instruction from the current bill-payment-only text to
+**Demo instruction**: update `04-external-agent/app.py`'s (and
+`present/capture.py`'s) default instruction from the current
+bill-payment-only text to
 `"Pay my $50 Epcor utility bill and tell me what a loan would look like if I want to buy a $28,000 car."`
 — one `act` (bill pay, exercises the mandate/gateway side) plus one
 `message` (exercises the new loan skill on the manager side), giving the
@@ -195,8 +218,8 @@ cinematic one of each event type to show off.
   add a demo-4-specific test only if the adaptation isn't a pure
   re-export.
 - No Rust changes — `loans.rs` is untouched.
-- Manual verification: run `capture.py` against the live stack, confirm
-  `gateway.html` builds and plays; run `present/app.py` live once to
+- Manual verification: run `present/capture.py` against the live stack,
+  confirm `gateway.html` builds and plays; run `app.py` live once to
   confirm the loan proposal round-trips through the manager (propose
   succeeds, execute is correctly refused when attempted from the A2A
   path — only reachable via the confirm-path console).
