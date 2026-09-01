@@ -30,8 +30,8 @@ TOKEN = os.environ.get("AGENT_GATEWAY_TOKEN", "")
 HDR = {"Authorization": f"Bearer {TOKEN}"}
 RECORDINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "present", "recordings")
 DEFAULT_INSTRUCTION = (
-    "Pay my $50 Epcor utility bill and tell me what a loan would look like "
-    "if I want to buy a $28,000 car."
+    "Pay my $50 Epcor utility bill, then ask my personal manager to confirm the payment "
+    "went through and explain what a loan would look like if I want to buy a $28,000 car."
 )
 
 st.set_page_config(page_title="nano-bank · external agent", layout="wide")
