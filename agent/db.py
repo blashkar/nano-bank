@@ -64,6 +64,13 @@ class ClientContext:
             "FROM accounts WHERE customer_id = %s AND account_type = 'credit_card'",
             (customer_id,))
 
+    def loans(self, customer_id: str) -> list[dict]:
+        return self._rows(
+            "-- loans\nSELECT loan_id, account_id, principal_amount, interest_rate, "
+            "amortization_months, monthly_payment, status, next_payment_date "
+            "FROM loans WHERE customer_id = %s ORDER BY created_at DESC",
+            (customer_id,))
+
     def interac_recipients(self, customer_id: str) -> list[dict]:
         return self._rows(
             "-- interac_recipients\nSELECT recipient_id, email, display_name, created_at "

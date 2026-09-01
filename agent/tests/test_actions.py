@@ -10,13 +10,18 @@ class FakeDB:
 
 
 class FakeBank:
-    def __init__(self): self.calls = []; self.withdraw_calls = []; self.etransfers = []
+    def __init__(self):
+        self.calls = []; self.withdraw_calls = []; self.etransfers = []
+        self.loan_applications = []; self.disbursements = []
+
     def transfer(self, token, from_account, to_account, amount, memo=None, idempotency_key=None):
         self.calls.append(("transfer", idempotency_key, str(amount)))
         return {"transaction_id": "t-" + idempotency_key}
+
     def withdraw(self, token, account_id, amount, description="Withdrawal", idempotency_key=None):
         self.withdraw_calls.append((idempotency_key, str(amount), description))
         return {"transaction_id": "w-" + (idempotency_key or "x")}
+
     def send_etransfer(self, token, from_account_id, amount, recipient_handle_value,
                        recipient_handle_type="email", security_question=None,
                        security_answer=None, memo=None, idempotency_key=None):
@@ -24,6 +29,14 @@ class FakeBank:
                                 "handle": recipient_handle_value, "q": security_question,
                                 "a": security_answer, "memo": memo})
         return {"etransfer_id": "e-" + (idempotency_key or "x"), "status": "held"}
+
+    def apply_for_loan(self, token, principal_amount, interest_rate, amortization_months):
+        self.loan_applications.append((str(principal_amount), str(interest_rate), amortization_months))
+        return {"loan_id": "L1", "status": "pending_disbursement"}
+
+    def disburse_loan(self, token, loan_id):
+        self.disbursements.append(loan_id)
+        return {"loan_id": loan_id, "status": "active"}
 
 
 class FakeAudit:
@@ -115,3 +128,49 @@ def test_interac_execute_sends_over_the_real_rail():
     assert call["handle"] == "x@y.ca" and call["amount"] == "10"
     assert call["q"] == "pet?" and call["a"] == "rex" and call["memo"] == "rent"
     assert bank.withdraw_calls == []  # money moves via the rail, not a withdrawal
+
+
+def test_loan_propose_skips_ownership_and_transfer_cap():
+    # principal ($28,000) exceeds the default transfer cap ($1000) but is well
+    # under the default loan cap ($100,000) -- propose must not use self.max here.
+    s, _db, bank, _audit, _clock = _store()
+    out = s.propose("C", "tok", "loan", amount="28000", interest_rate="0.0799",
+                    amortization_months=60)
+    assert out["kind"] == "loan"
+    assert bank.loan_applications == []          # propose never calls the bank
+
+
+def test_loan_propose_over_loan_cap_denied():
+    s, _db, _bank, audit, _clock = _store()
+    with pytest.raises(ActDenied):
+        s.propose("C", "tok", "loan", amount="500000", interest_rate="0.0799",
+                  amortization_months=60)
+    assert audit.events[-1]["outcome"] == "denied"
+
+
+def test_loan_propose_rejects_bad_rate_and_term():
+    s, *_ = _store()
+    with pytest.raises(ActDenied):
+        s.propose("C", "tok", "loan", amount="10000", interest_rate="1.5",
+                  amortization_months=60)          # rate > 1
+    with pytest.raises(ActDenied):
+        s.propose("C", "tok", "loan", amount="10000", interest_rate="0.08",
+                  amortization_months=0)            # non-positive term
+
+
+def test_loan_execute_applies_then_disburses():
+    s, _db, bank, _audit, _clock = _store()
+    pid = s.propose("C", "tok", "loan", amount="28000", interest_rate="0.0799",
+                    amortization_months=60)["id"]
+    res = s.execute(pid, "C", "tok")
+    assert bank.loan_applications == [("28000", "0.0799", 60)]
+    assert bank.disbursements == ["L1"]
+    assert res["loan"]["loan_id"] == "L1"
+    assert res["disbursement"]["status"] == "active"
+
+
+def test_loan_summary_mentions_principal_rate_and_term():
+    s, *_ = _store()
+    out = s.propose("C", "tok", "loan", amount="28000", interest_rate="0.0799",
+                    amortization_months=60)
+    assert "28000" in out["summary"] and "60" in out["summary"] and "0.0799" in out["summary"]

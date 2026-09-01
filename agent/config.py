@@ -16,6 +16,7 @@ class Settings:
     nano_bank_api: str
     branch_service_token: str
     act_max_per_tx: Decimal
+    loan_max_principal: Decimal
     confirm_ttl_s: int
     mcp_url: str
     cxo_url: str
@@ -52,6 +53,7 @@ class Settings:
             nano_bank_api=g("NANO_BANK_API", "http://localhost:8081"),
             branch_service_token=g("BRANCH_SERVICE_TOKEN"),
             act_max_per_tx=Decimal(g("ACT_MAX_PER_TX", "1000")),
+            loan_max_principal=Decimal(g("LOAN_MAX_PRINCIPAL", "100000")),
             confirm_ttl_s=int(g("CONFIRM_TTL_S", "300")),
             mcp_url=g("MCP_URL", "http://localhost:8087/mcp"),
             cxo_url=g("CXO_URL", "http://cxo:8098"),

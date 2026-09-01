@@ -118,3 +118,34 @@ def test_send_etransfer_posts_to_the_interac_rail():
     assert b["recipient_handle_type"] == "email" and b["recipient_handle_value"] == "sam@example.ca"
     assert b["security_question"] == "pet?" and b["security_answer"] == "rex"
     assert b["idempotency_key"] == "act-1"
+
+
+def test_apply_for_loan_posts_principal_rate_and_months():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        seen["auth"] = req.headers.get("authorization")
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(201, json={"loan_id": "L1", "status": "pending_disbursement"})
+
+    out = _client(handler).apply_for_loan("jwt", "28000", "0.0799", 60)
+    assert out["loan_id"] == "L1"
+    assert seen["url"].endswith("/api/v1/loans")
+    assert seen["auth"] == "Bearer jwt"
+    assert seen["body"] == {"principal_amount": "28000", "interest_rate": "0.0799",
+                            "amortization_months": 60}
+
+
+def test_disburse_loan_posts_to_loan_id():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        seen["auth"] = req.headers.get("authorization")
+        return httpx.Response(200, json={"loan_id": "L1", "status": "active"})
+
+    out = _client(handler).disburse_loan("jwt", "L1")
+    assert out["status"] == "active"
+    assert seen["url"].endswith("/api/v1/loans/L1/disburse")
+    assert seen["auth"] == "Bearer jwt"
