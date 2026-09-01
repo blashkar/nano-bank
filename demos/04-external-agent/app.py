@@ -164,8 +164,9 @@ def _event_card(e: dict) -> None:
                     f"{'🔧' if t['kind'] == 'tool' else '🧠'}{'✅' if t.get('ok') else '❌'} "
                     f"{t['name']} {t['elapsed_ms']}ms" for t in trace))
         return
-    st.success(f"✅ done — {e['steps']} step(s). Try **Revoke** then **Run agent** again: "
-               "the next act is denied at the gateway.")
+    st.success(f"✅ done — {e['steps']} step(s) completed successfully. "
+               "Want to see a denial instead? Click **Revoke**, then **Run agent** again — "
+               "the next act will be denied at the gateway (no active mandate).")
 
 
 # --- cinematic (default) + step-through -------------------------------------

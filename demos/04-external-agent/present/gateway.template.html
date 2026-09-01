@@ -179,7 +179,7 @@ function traceLine(trace){
 function eventParts(e){
   if(e.kind==='plan') return [{side:'ext', header:'🧠 AGENT PLAN', text:e.instruction||''}];
   if(e.kind==='result') return [{side:'mid', header:'✅ RUN COMPLETE',
-    text:(e.steps||0)+' step(s) executed. Try Revoke then Run again — the next act is denied at the gateway.'}];
+    text:(e.steps||0)+' step(s) completed successfully. Want to see a denial instead? Click Revoke, then Run again — the next act will be denied at the gateway (no active mandate).'}];
   if(e.kind==='act'){
     const res=e.result||{}, dec=res.decision||'unknown';
     let detail;
@@ -226,8 +226,14 @@ function typeInto(el, text){
   }, per);
 }
 function dwell(step){
-  const words=(step.text||'').split(/\s+/).length;
-  return Math.min(6500, 2200 + words*120) / speed;
+  // Must be at least as long as typeInto() takes to finish this text, or
+  // auto-play advances to the next step while the bubble is still mid-type
+  // -- the banner/next bubble then covers an unfinished answer.
+  const text=step.text||''; const total=text.length;
+  const per=Math.max(9, Math.min(28, 18/speed));
+  const perTick=total>240?2:1;
+  const typeMs=Math.ceil(total/perTick)*per;
+  return typeMs + 900/speed;   // + a short pause to actually read it
 }
 
 const DEC_LABEL={allow:'🟢 ALLOW', deny:'🔴 DENY', pending_approval:'🟡 PENDING APPROVAL'};
@@ -235,6 +241,7 @@ const DEC_CLASS={allow:'allow', deny:'deny', pending_approval:'pending'};
 
 function render(){
   const s=STEPS[idx]; if(!s) return;
+  clearInterval(typeTimer);   // never let a step change (auto or manual) leave a stray typewriter running behind the new content
   $('eyebrow').textContent = 'EVENT '+(s.ei+1)+'/'+EVENTS.length+' · '+s.ekind.toUpperCase();
   $('agendaQ').textContent = s.header;
   $('meta').innerHTML = 'Step <b>'+(idx+1)+'</b>/'+STEPS.length;
