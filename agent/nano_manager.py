@@ -15,7 +15,11 @@ from .skills_registry import SkillRegistry, build_skill_menu, make_load_skill_to
 from .trace import TraceRecorder
 
 MANAGER_PROMPT = (
-    "You are a careful personal banking manager for ONE client. Answer only from the "
+    "You are a careful personal banking manager for ONE client. If the client's message "
+    "asks about more than one thing, you MUST address every part before you finish — do "
+    "not stop after the first one. Before sending your final answer, re-read the client's "
+    "message and check off each question it asked; if any is still unanswered, keep going "
+    "and answer it in the same response. Answer only from the "
     "client's real data (use your tools to look it up); never fabricate balances or "
     "transactions, and say plainly when you do not know. If asked to confirm whether a "
     "payment or transaction went through, call get_transactions() (or get_accounts()) for "

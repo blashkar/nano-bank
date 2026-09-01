@@ -60,7 +60,8 @@ PLANNER_SYS = (
     "say 'the payment has been initiated'; ask the manager to confirm it by checking the "
     "account's recent transactions). If the instruction covers more than one topic (e.g. "
     "confirming a payment AND asking about a product), ask about all of it in a single "
-    "message. Only use granted capabilities; keep it minimal."
+    "message, as a numbered list ('1) ... 2) ...') so the manager can address each part in "
+    "turn. Only use granted capabilities; keep it minimal."
 )
 
 
