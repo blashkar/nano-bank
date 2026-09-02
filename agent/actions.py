@@ -30,18 +30,22 @@ class PendingAction:
     expires_at: float
     status: str = "pending"   # pending | executed | cancelled
     result: Optional[dict] = None
+    interest_rate: Optional[str] = None
+    amortization_months: Optional[int] = None
 
 
-_KINDS = {"transfer", "deposit", "withdraw", "interac"}
+_KINDS = {"transfer", "deposit", "withdraw", "interac", "loan"}
 
 
 class ActionStore:
     def __init__(self, db, bank, audit, max_per_tx: Decimal, ttl_s: int,
+                 loan_max_principal: Decimal = Decimal("100000"),
                  now: Callable[[], float] = time.time):
         self.db = db
         self.bank = bank
         self.audit = audit
         self.max = max_per_tx
+        self.loan_max_principal = loan_max_principal
         self.ttl = ttl_s
         self.now = now
         self._pending: dict[str, PendingAction] = {}
@@ -57,13 +61,29 @@ class ActionStore:
 
     def propose(self, customer_id, token, kind, *, amount,
                 from_account=None, to_account=None, memo=None, payee_email=None,
-                security_question=None, security_answer=None) -> dict:
+                security_question=None, security_answer=None,
+                interest_rate=None, amortization_months=None) -> dict:
         if kind not in _KINDS:
             raise ActDenied(f"unknown kind: {kind}")
         a = self._amount(amount)
-        if a > self.max:
+        cap = self.loan_max_principal if kind == "loan" else self.max
+        if a > cap:
             self._audit(customer_id, kind, a, "denied", "over cap")
-            raise ActDenied(f"amount {a} exceeds per-transaction cap {self.max}")
+            cap_name = "loan principal" if kind == "loan" else "per-transaction"
+            raise ActDenied(f"amount {a} exceeds {cap_name} cap {cap}")
+        if kind == "loan":
+            try:
+                rate = Decimal(str(interest_rate))
+            except (InvalidOperation, ValueError, TypeError):
+                raise ActDenied(f"invalid interest_rate: {interest_rate!r}")
+            if rate < 0 or rate > 1:
+                raise ActDenied("interest_rate must be between 0 and 1")
+            try:
+                months = int(amortization_months)
+            except (ValueError, TypeError):
+                raise ActDenied(f"invalid amortization_months: {amortization_months!r}")
+            if months <= 0:
+                raise ActDenied("amortization_months must be positive")
         # ownership: any account the customer names as *theirs* must belong to them.
         for acct in ((from_account,) if kind in ("transfer", "withdraw") else (to_account,)):
             if acct and not self.db.owns_account(customer_id, acct):
@@ -88,7 +108,9 @@ class ActionStore:
                            payee_email=payee_email,
                            security_question=security_question,
                            security_answer=security_answer,
-                           created_at=now, expires_at=now + self.ttl)
+                           created_at=now, expires_at=now + self.ttl,
+                           interest_rate=str(Decimal(str(interest_rate))) if kind == "loan" else None,
+                           amortization_months=int(amortization_months) if kind == "loan" else None)
         self._pending[pid] = pa
         self._audit(customer_id, kind, a, "proposed", "", action_id=pid)
         return {"id": pid, "kind": kind, "amount": str(a), "from": from_account,
@@ -105,7 +127,8 @@ class ActionStore:
         if self.now() > pa.expires_at:
             self._audit(customer_id, pa.kind, Decimal(pa.amount), "expired", "")
             raise ActError("action expired")
-        if Decimal(pa.amount) > self.max:
+        cap = self.loan_max_principal if pa.kind == "loan" else self.max
+        if Decimal(pa.amount) > cap:
             raise ActError("over cap")
         try:
             if pa.kind == "transfer":
@@ -120,6 +143,19 @@ class ActionStore:
                     security_question=pa.security_question,
                     security_answer=pa.security_answer,
                     memo=pa.memo, idempotency_key=pa.id)
+            elif pa.kind == "loan":
+                # nano-bank's lending is servicing-only (no underwriting step to
+                # wait on) -- apply and disburse as one confirmed customer action.
+                # NOTE: POST /api/v1/loans has no idempotency-key support
+                # server-side (unlike transfers), so a raw transport retry of
+                # this execute() between apply and disburse could in principle
+                # create a second loan. Out of scope for this demo/servicing-only
+                # product -- would need an API change in loans.rs to fix.
+                applied = self.bank.apply_for_loan(token, pa.amount, pa.interest_rate,
+                                                   pa.amortization_months)
+                loan_id = applied.get("loan_id")
+                disbursed = self.bank.disburse_loan(token, loan_id) if loan_id else None
+                res = {"loan": applied, "disbursement": disbursed}
             else:
                 res = self.bank.withdraw(token, pa.from_account, pa.amount, idempotency_key=pa.id)
         except Exception as e:  # noqa: BLE001
@@ -151,6 +187,9 @@ class ActionStore:
         if pa.kind == "interac":
             return f"Interac e-Transfer {pa.amount} from {pa.from_account} to {pa.payee_email}" + \
                    (f" ({pa.memo})" if pa.memo else "")
+        if pa.kind == "loan":
+            return (f"Apply for a car loan: principal {pa.amount} over "
+                    f"{pa.amortization_months} months at {pa.interest_rate} APR")
         return f"Withdraw {pa.amount} from {pa.from_account}"
 
     def _audit(self, customer_id, kind, amount, outcome, reason, action_id=None):

@@ -15,10 +15,11 @@ _CUSTOMER: contextvars.ContextVar[str] = contextvars.ContextVar("nano_customer")
 _TOKEN: contextvars.ContextVar[str] = contextvars.ContextVar("nano_token")
 
 LLM_TOOL_NAMES = frozenset({
-    "get_profile", "get_accounts", "get_transactions", "get_cards",
+    "get_profile", "get_accounts", "get_transactions", "get_cards", "get_loans",
     "recall", "remember", "propose_transfer", "propose_deposit", "propose_withdraw",
     "register_interac_recipient", "list_interac_recipients",
-    "remove_interac_recipient", "propose_interac_transfer", "open_account"})
+    "remove_interac_recipient", "propose_interac_transfer", "open_account",
+    "propose_loan_application"})
 CONFIRM_ONLY_TOOL_NAMES = frozenset({"execute_action", "cancel_action"})
 
 
@@ -106,6 +107,11 @@ def build_mcp(deps: Deps) -> FastMCP:
         return deps.db.cards(current_customer())
 
     @mcp.tool()
+    def get_loans() -> list:
+        """The bound client's loans (principal, rate, term, status, next payment)."""
+        return deps.db.loans(current_customer())
+
+    @mcp.tool()
     def recall(query: str, k: int = 3) -> list:
         """Recall durable memories about the bound client."""
         return deps.memory.recall(query, current_customer(), k=k)
@@ -174,6 +180,17 @@ def build_mcp(deps: Deps) -> FastMCP:
                         security_answer=security_answer or None,
                         memo=memo or None)
 
+    @mcp.tool()
+    def propose_loan_application(principal_amount: str, interest_rate: str,
+                                 amortization_months: int) -> dict:
+        """Propose a new loan (e.g. an auto loan) for the bound client: principal
+        amount, annual interest_rate as a decimal fraction (e.g. '0.0799' for
+        7.99%), and amortization_months. Requires confirmation; the client's own
+        confirm both applies for the loan and disburses it into their chequing
+        account in one step."""
+        return _propose("loan", amount=principal_amount, interest_rate=interest_rate,
+                        amortization_months=amortization_months)
+
     # --- confirm-only (never bound to the agent's toolset) -------------------
     @mcp.tool()
     def execute_action(action_id: str) -> dict:
@@ -216,7 +233,8 @@ def build_deps(settings: Settings) -> Deps:
     from .bank import BankClient
     bank = BankClient(settings.nano_bank_api)
     actions = ActionStore(db, bank, audit,
-                          max_per_tx=settings.act_max_per_tx, ttl_s=settings.confirm_ttl_s)
+                          max_per_tx=settings.act_max_per_tx, ttl_s=settings.confirm_ttl_s,
+                          loan_max_principal=settings.loan_max_principal)
     return Deps(db=db, memory=memory, audit=audit, actions=actions, bank=bank,
                 cxo_url=settings.cxo_url)
 

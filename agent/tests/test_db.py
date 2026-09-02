@@ -15,6 +15,9 @@ class FakeCtx(ClientContext):
             return self._tables.get("profile", [])
         if "-- owns" in sql:
             return self._tables.get("owns", [])
+        if "-- loans" in sql:
+            self.last = (sql, params)
+            return self._tables.get("loans", [])
         if "-- interac_recipients" in sql:
             self.last = (sql, params)
             return self._tables.get("recipients", [])
@@ -58,3 +61,14 @@ def test_recipient_by_id_returns_none_when_absent():
     assert FakeCtx({"recipient": []}).recipient("cust-1", "nope") is None
     ctx = FakeCtx({"recipient": [{"recipient_id": "r1", "email": "a@b.ca"}]})
     assert ctx.recipient("cust-1", "r1")["email"] == "a@b.ca"
+
+
+def test_loans_query_shape():
+    ctx = FakeCtx({"loans": [{"loan_id": "l1", "account_id": "a1",
+                              "principal_amount": "28000.00", "interest_rate": "0.0799",
+                              "amortization_months": 60, "monthly_payment": "567.89",
+                              "status": "active", "next_payment_date": "2026-09-29"}]})
+    out = ctx.loans("cust-1")
+    assert out[0]["loan_id"] == "l1"
+    sql, params = ctx.last
+    assert "FROM loans" in sql and params == ("cust-1",)

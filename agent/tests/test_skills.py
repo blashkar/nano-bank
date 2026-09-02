@@ -43,9 +43,10 @@ def test_seed_skills_load_from_repo():
     from pathlib import Path
     reg = SkillRegistry.from_dir(Path(__file__).resolve().parents[1] / "skills")
     names = {s.name for s in reg.all()}
-    assert {"chequing", "savings", "credit_card", "personal-finance", "investment"} <= names
+    assert {"chequing", "savings", "credit_card", "loan", "personal-finance", "investment"} <= names
     prod = {s.name: s.product for s in reg.all() if s.kind == "product"}
-    assert prod == {"chequing": "chequing", "savings": "savings", "credit_card": "credit_card"}
+    assert prod == {"chequing": "chequing", "savings": "savings",
+                    "credit_card": "credit_card", "loan": "loan"}
     assert reg.get("investment").kind == "advisory"
 
 

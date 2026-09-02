@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nano-bank · external agent gateway</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#023047; --edge:rgba(255,255,255,.18); --line:rgba(255,255,255,.12);
+    --text:#ffffff; --muted:#cbd5e1; --faint:#8ea3b8;
+    /* bank/manager side -- same brand as the C-suite boardroom */
+    --bank:#219ebc; --bank2:#ffb703;
+    /* external-agent side -- deliberately foreign, not nano-bank brand */
+    --ext:#8338ec;
+    --allow:#2a9d3f; --deny:#e5383b; --pending:#f4a300;
+    --disp:'Geist',system-ui,sans-serif; --mono:'Geist Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(ellipse 60% 50% at 50% 0%, rgba(12,43,62,.6) 0%, transparent 70%),
+      linear-gradient(to right, #0c2b3e 1px, transparent 1px),
+      linear-gradient(to bottom, #0c2b3e 1px, transparent 1px),
+      var(--ink);
+    background-size: auto, 4rem 4rem, 4rem 4rem, auto;
+    color:var(--text); font-family:var(--disp);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .wrap{display:flex;flex-direction:column;height:100vh;max-width:1500px;margin:0 auto;padding:0 clamp(12px,3vw,32px)}
+
+  .top{display:flex;align-items:center;gap:18px;padding:16px 4px 12px;border-bottom:1px solid var(--line)}
+  .live{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:#ff5d6c;font-weight:600}
+  .live .dot{width:9px;height:9px;border-radius:50%;background:#ff5d6c;animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,93,108,.6)}70%{box-shadow:0 0 0 10px rgba(255,93,108,0)}100%{box-shadow:0 0 0 0 rgba(255,93,108,0)}}
+  .brand{font-family:var(--disp);font-weight:700;letter-spacing:.02em;font-size:clamp(15px,1.5vw,19px)}
+  .brand b{color:var(--bank2)}
+  .capbtn{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.07em;color:var(--bank2);background:transparent;border:1px solid var(--edge);
+    border-radius:999px;padding:7px 14px;cursor:pointer;text-transform:uppercase;transition:.15s}
+  .capbtn:hover{background:rgba(255,255,255,.08)} .capbtn:disabled{opacity:.45;cursor:default}
+  .clock{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:52px;text-align:right}
+  .capstatus{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:60;background:rgba(5,42,64,.9);backdrop-filter:blur(12px);border:1px solid var(--edge);
+    border-radius:12px;padding:12px 18px;display:none;align-items:center;gap:12px;box-shadow:0 20px 50px rgba(0,0,0,.5);
+    font-family:var(--mono);font-size:12px;color:var(--text);max-width:80vw}
+  .capstatus.show{display:flex}
+  .capstatus .sp{width:14px;height:14px;border:2px solid var(--edge);border-top-color:var(--bank2);border-radius:50%;animation:spin .8s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .agenda{display:flex;align-items:baseline;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line)}
+  .agenda .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
+  .agenda .q{font-family:var(--disp);font-weight:600;font-size:clamp(14px,1.5vw,18px);color:var(--text);line-height:1.25;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .stage{flex:1 1 auto;min-height:320px;display:grid;grid-template-columns:1fr 220px 1fr;gap:0;align-items:stretch;padding:18px 0;position:relative}
+  .side{border-radius:18px;padding:20px;display:flex;flex-direction:column;gap:14px;border:1px solid var(--edge);
+    background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.02));transition:.35s;position:relative;overflow:hidden}
+  .side.ext{margin-right:14px;--ac:var(--ext)} .side.bank{margin-left:14px;--ac:var(--bank)}
+  .side .head{display:flex;align-items:center;gap:10px}
+  .side .avatar{width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:26px;
+    background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.04));border:1px solid var(--edge)}
+  .side .who{font-family:var(--disp);font-weight:700;font-size:16px;letter-spacing:.02em}
+  .side .role{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--faint);text-transform:uppercase}
+  .side.ext .avatar,.side.ext .who{color:var(--ext)}
+  .side.bank .avatar,.side.bank .who{color:var(--bank)}
+  .side.active{box-shadow:0 0 0 1px var(--ac),0 0 40px -8px var(--ac);border-color:var(--ac)}
+  .side.dim{opacity:.55;filter:saturate(.7)}
+
+  .bubble{flex:1 1 auto;background:#f2f9fc;color:var(--ink);border-radius:16px;padding:18px 20px;
+    font-family:var(--disp);font-size:16px;line-height:1.5;overflow:auto;min-height:1.4em;
+    box-shadow:0 14px 34px rgba(0,0,0,.35);border:1px solid #fff}
+  .bubble .hdr{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#556;margin-bottom:8px;font-weight:700}
+  .side.ext .bubble .hdr{color:var(--ext)} .side.bank .bubble .hdr{color:var(--bank)}
+  .bubble .txt{white-space:pre-wrap;word-break:break-word;min-height:1.2em}
+
+  .rail{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+  .rail .conduit{width:2px;flex:1 1 auto;background:linear-gradient(var(--ext),var(--bank));opacity:.35;min-height:40px}
+  .rail .pill{font-family:var(--mono);font-size:11px;letter-spacing:.08em;font-weight:700;padding:8px 14px;border-radius:999px;
+    background:rgba(255,255,255,.08);border:1px solid var(--edge);color:var(--muted);text-transform:uppercase;text-align:center;
+    transition:.3s;opacity:0;transform:scale(.85)}
+  .rail .pill.show{opacity:1;transform:scale(1)}
+  .rail .pill.allow{background:var(--allow);color:#fff;border-color:transparent;box-shadow:0 0 24px -4px var(--allow)}
+  .rail .pill.deny{background:var(--deny);color:#fff;border-color:transparent;box-shadow:0 0 24px -4px var(--deny)}
+  .rail .pill.pending{background:var(--pending);color:#231a00;border-color:transparent;box-shadow:0 0 24px -4px var(--pending)}
+  .rail .arrow{font-size:22px;color:var(--faint);opacity:0;transition:.3s}
+  .rail .arrow.show{opacity:1}
+  .rail .gwlabel{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--faint);text-transform:uppercase}
+
+  .banner{position:absolute;inset:18px 0;display:flex;align-items:center;justify-content:center;text-align:center;
+    background:rgba(2,48,71,.85);backdrop-filter:blur(6px);border-radius:18px;opacity:0;pointer-events:none;transition:.4s;
+    font-family:var(--disp);font-size:clamp(16px,2vw,22px);font-weight:700;padding:24px;z-index:5}
+  .banner.show{opacity:1}
+
+  .transport{display:flex;align-items:center;gap:16px;padding:12px 4px 18px;border-top:1px solid var(--line)}
+  .tbtn{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--edge);border-radius:12px;height:44px;min-width:44px;padding:0 14px;
+    font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.15s}
+  .tbtn:hover{border-color:var(--bank)}
+  .tbtn.play{background:linear-gradient(90deg,var(--ext),var(--bank),var(--bank2));background-size:200% auto;color:#031420;
+    border-color:transparent;font-weight:700;min-width:130px;font-family:var(--disp);box-shadow:0 0 20px rgba(33,158,188,.35)}
+  .tbtn.play:hover{background-position:right}
+  .progress{flex:1;height:8px;background:rgba(255,255,255,.08);border-radius:8px;overflow:hidden;cursor:pointer;border:1px solid var(--line)}
+  .progress .fill{height:100%;width:0;background:linear-gradient(90deg,var(--ext),var(--bank),var(--bank2));transition:width .3s linear}
+  .meta{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:190px;text-align:right}
+  .meta b{color:var(--text)}
+  .speed{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .speed input{accent-color:var(--bank2)}
+
+  @media (max-width:900px){
+    .stage{grid-template-columns:1fr;gap:14px}
+    .side.ext,.side.bank{margin:0}
+    .rail{flex-direction:row;padding:6px 0}
+    .rail .conduit{width:auto;height:2px;flex:1 1 auto;background:linear-gradient(90deg,var(--ext),var(--bank))}
+    .meta{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){ *{animation:none!important;transition:none!important} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <span class="live"><span class="dot"></span>LIVE</span>
+    <span class="brand">nano-bank · <b>GATEWAY</b> — external mandated agent</span>
+    <button class="capbtn" id="captureBtn" title="Record a fresh run live against the deployed gateway, then play it">⦿ Capture live</button>
+    <span class="clock" id="clock">00:00</span>
+  </div>
+  <div class="capstatus" id="capStatus"><span class="sp"></span><span id="capMsg">Starting…</span></div>
+
+  <div class="agenda">
+    <span class="eyebrow" id="eyebrow">STEP</span>
+    <span class="q" id="agendaQ">—</span>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="side ext" id="sideExt">
+      <div class="head"><div class="avatar">🛰️</div><div><div class="who">External Agent</div><div class="role">customer-mandated · outside the bank</div></div></div>
+      <div class="bubble"><div class="hdr" id="extHdr">—</div><div class="txt" id="extTxt">Press play to run the agent.</div></div>
+    </div>
+
+    <div class="rail">
+      <div class="gwlabel">Gateway</div>
+      <div class="conduit"></div>
+      <div class="arrow" id="arrow">→</div>
+      <div class="pill" id="pill">—</div>
+      <div class="conduit"></div>
+    </div>
+
+    <div class="side bank" id="sideBank">
+      <div class="head"><div class="avatar">🏦</div><div><div class="who">Personal Manager</div><div class="role">nano-bank · A2A over the branch</div></div></div>
+      <div class="bubble"><div class="hdr" id="bankHdr">—</div><div class="txt" id="bankTxt">Waiting…</div></div>
+    </div>
+
+    <div class="banner" id="banner"></div>
+  </div>
+
+  <div class="transport">
+    <button class="tbtn" id="prev" title="Previous step">⏮</button>
+    <button class="tbtn play" id="play">▶ Run</button>
+    <button class="tbtn" id="next" title="Next step">⏭</button>
+    <div class="progress" id="progress"><div class="fill" id="fill"></div></div>
+    <div class="speed">SPEED <input id="speed" type="range" min="0.5" max="2" step="0.25" value="1"><span id="speedv">1.0×</span></div>
+    <div class="meta" id="meta">—</div>
+  </div>
+</div>
+
+<script>
+const EVENTS = /*__EVENTS__*/ [];
+
+function clean(md){
+  return (md||'').replace(/`{1,3}/g,'').replace(/\*\*/g,'').replace(/[*_]/g,'')
+    .replace(/^#{1,6}\s*/gm,'').replace(/^\s*[-•]\s*/gm,'• ').replace(/\n{3,}/g,'\n\n').trim();
+}
+function traceLine(trace){
+  if(!trace || !trace.length) return '';
+  return 'trace: ' + trace.map(t=>(t.kind==='tool'?'🔧':'🧠')+(t.ok?'✅':'❌')+' '+t.name+' '+t.elapsed_ms+'ms').join('  ·  ');
+}
+
+function eventParts(e){
+  if(e.kind==='plan') return [{side:'ext', header:'🧠 AGENT PLAN', text:e.instruction||''}];
+  if(e.kind==='result') return [{side:'mid', header:'✅ RUN COMPLETE',
+    text:(e.steps||0)+' step(s) completed successfully. Want to see a denial instead? Click Revoke, then Run again — the next act will be denied at the gateway (no active mandate).'}];
+  if(e.kind==='act'){
+    const res=e.result||{}, dec=res.decision||'unknown';
+    let detail;
+    if(dec==='pending_approval'){
+      detail='⏸ over the daily cap — parked for the customer to approve (approval '+
+             String(res.approval_id||'').slice(0,8)+'). Not paid yet.';
+    } else if(dec==='allow'){
+      detail=clean(typeof res.reason==='string' && res.reason ? res.reason
+                   : (typeof res.result==='string' ? res.result : JSON.stringify(res.result||res)));
+    } else {
+      detail=clean(res.reason || JSON.stringify(res));
+    }
+    return [
+      {side:'ext', header:'🛰️ EXTERNAL AGENT → ACT', text:(e.operation||'')+' '+JSON.stringify(e.params||{})},
+      {side:'bank', header:'🏦 GATEWAY → MANDATE CHECK', text:detail, decision:dec},
+    ];
+  }
+  if(e.kind==='message'){
+    return [
+      {side:'ext', header:'🛰️ EXTERNAL AGENT → ASKS THE MANAGER', text:e.text||''},
+      {side:'bank', header:'🏦 PERSONAL MANAGER', text:clean(e.answer||'')+
+        (traceLine(e.trace) ? '\n\n'+traceLine(e.trace) : '')},
+    ];
+  }
+  return [];
+}
+
+const STEPS = [];
+EVENTS.forEach((e,ei)=>{ eventParts(e).forEach(p=>STEPS.push({...p, ei, ekind:e.kind})); });
+
+let idx=0, playing=false, timer=null, speed=1, clock=0, clockTimer=null, typeTimer=null;
+const REDUCE = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+const $=id=>document.getElementById(id);
+
+function typeInto(el, text){
+  clearInterval(typeTimer);
+  if(REDUCE){ el.textContent=text; return; }
+  el.textContent=''; let i=0; const total=text.length;
+  const per=Math.max(9, Math.min(28, 18/speed));
+  typeTimer=setInterval(()=>{
+    i=Math.min(total, i + (total>240?2:1));
+    el.textContent=text.slice(0,i);
+    if(i>=total) clearInterval(typeTimer);
+  }, per);
+}
+function dwell(step){
+  // Must be at least as long as typeInto() takes to finish this text, or
+  // auto-play advances to the next step while the bubble is still mid-type
+  // -- the banner/next bubble then covers an unfinished answer.
+  const text=step.text||''; const total=text.length;
+  const per=Math.max(9, Math.min(28, 18/speed));
+  const perTick=total>240?2:1;
+  const typeMs=Math.ceil(total/perTick)*per;
+  return typeMs + 900/speed;   // + a short pause to actually read it
+}
+
+const DEC_LABEL={allow:'🟢 ALLOW', deny:'🔴 DENY', pending_approval:'🟡 PENDING APPROVAL'};
+const DEC_CLASS={allow:'allow', deny:'deny', pending_approval:'pending'};
+
+function render(){
+  const s=STEPS[idx]; if(!s) return;
+  clearInterval(typeTimer);   // never let a step change (auto or manual) leave a stray typewriter running behind the new content
+  $('eyebrow').textContent = 'EVENT '+(s.ei+1)+'/'+EVENTS.length+' · '+s.ekind.toUpperCase();
+  $('agendaQ').textContent = s.header;
+  $('meta').innerHTML = 'Step <b>'+(idx+1)+'</b>/'+STEPS.length;
+  $('fill').style.width = (STEPS.length ? ((idx+1)/STEPS.length*100) : 0)+'%';
+
+  $('banner').classList.remove('show');
+  $('sideExt').classList.remove('active','dim');
+  $('sideBank').classList.remove('active','dim');
+  $('arrow').classList.remove('show');
+  $('pill').className='pill';
+
+  if(s.side==='mid'){
+    $('sideExt').classList.add('dim'); $('sideBank').classList.add('dim');
+    const b=$('banner'); b.textContent=s.text; b.classList.add('show');
+  } else if(s.side==='ext'){
+    $('sideExt').classList.add('active'); $('sideBank').classList.add('dim');
+    $('extHdr').textContent=s.header;
+    requestAnimationFrame(()=>typeInto($('extTxt'), s.text));
+  } else { // bank
+    $('sideBank').classList.add('active'); $('sideExt').classList.add('dim');
+    $('bankHdr').textContent=s.header;
+    requestAnimationFrame(()=>typeInto($('bankTxt'), s.text));
+    if(s.decision){
+      $('arrow').classList.add('show');
+      const cls=DEC_CLASS[s.decision]||'';
+      $('pill').textContent = DEC_LABEL[s.decision] || s.decision.toUpperCase();
+      requestAnimationFrame(()=>$('pill').classList.add('show', cls));
+    }
+  }
+}
+
+function go(n){ idx=Math.max(0,Math.min(STEPS.length-1,n)); render(); }
+function step(dir){ go(idx+dir); if(playing) schedule(); }
+function schedule(){
+  clearTimeout(timer);
+  timer=setTimeout(()=>{
+    if(idx>=STEPS.length-1){ stop(); return; }
+    idx++; render(); schedule();
+  }, dwell(STEPS[idx]));
+}
+function play(){ if(!STEPS.length) return; playing=true; $('play').innerHTML='⏸ Pause'; startClock(); render(); schedule(); }
+function stop(){ playing=false; $('play').innerHTML='▶ Run'; clearTimeout(timer); stopClock(); }
+function toggle(){ playing?stop():play(); }
+function startClock(){ stopClock(); clockTimer=setInterval(()=>{clock++;renderClock();},1000); }
+function stopClock(){ clearInterval(clockTimer); }
+function renderClock(){ const m=String(Math.floor(clock/60)).padStart(2,'0'),s=String(clock%60).padStart(2,'0'); $('clock').textContent=m+':'+s; }
+
+$('play').onclick=toggle;
+$('next').onclick=()=>step(1);
+$('prev').onclick=()=>step(-1);
+$('speed').oninput=e=>{speed=parseFloat(e.target.value);$('speedv').textContent=speed.toFixed(1)+'×';if(playing)schedule();};
+$('progress').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();go(Math.round((e.clientX-r.left)/r.width*STEPS.length));};
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();toggle();}
+  if(e.code==='ArrowRight')step(1); if(e.code==='ArrowLeft')step(-1);
+});
+
+async function pollCapture(){
+  let s;
+  try{ s=await (await fetch('/api/capture/status')).json(); }
+  catch(_){ $('capMsg').textContent='⚠ capture server not reachable'; $('captureBtn').disabled=false; return; }
+  $('capMsg').textContent = s.message || 'Capturing…';
+  if(s.running){ setTimeout(pollCapture, 1200); return; }
+  if(s.ok){ $('capMsg').textContent='✓ '+s.message; setTimeout(()=>location.reload(), 900); }
+  else{
+    $('capMsg').textContent='⚠ '+(s.message||'capture failed');
+    $('captureBtn').disabled=false;
+    setTimeout(()=>$('capStatus').classList.remove('show'), 5000);
+  }
+}
+if(location.protocol==='file:'){
+  $('captureBtn').disabled=true;
+  $('captureBtn').title='Serve via gateway_server.py to capture live';
+}
+$('captureBtn').onclick=async ()=>{
+  if(!confirm('Record a fresh run live against the deployed gateway?\n\nThis drives the real external agent and personal manager.')) return;
+  stop(); $('captureBtn').disabled=true;
+  $('capStatus').classList.add('show'); $('capMsg').textContent='Starting…';
+  try{
+    const r=await fetch('/api/capture',{method:'POST'});
+    if(r.status===409) $('capMsg').textContent='A capture is already running…';
+  }catch(_){ $('capMsg').textContent='⚠ capture server not reachable (serve via gateway_server.py)'; $('captureBtn').disabled=false; return; }
+  pollCapture();
+};
+
+if(STEPS.length){ render(); } else { $('agendaQ').textContent='No recording yet — capture one live.'; }
+</script>
+</body>
+</html>

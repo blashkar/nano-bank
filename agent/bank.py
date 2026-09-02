@@ -105,6 +105,16 @@ class BankClient:
     def create_account(self, token, payload: dict) -> dict:
         return self._post("/api/v1/accounts", payload, token=token)
 
+    def apply_for_loan(self, token, principal_amount, interest_rate, amortization_months) -> dict:
+        return self._post("/api/v1/loans",
+                          {"principal_amount": str(principal_amount),
+                           "interest_rate": str(interest_rate),
+                           "amortization_months": int(amortization_months)},
+                          token=token)
+
+    def disburse_loan(self, token, loan_id) -> dict:
+        return self._post(f"/api/v1/loans/{loan_id}/disburse", {}, token=token)
+
 
 def _safe_json(r: httpx.Response):
     try:
